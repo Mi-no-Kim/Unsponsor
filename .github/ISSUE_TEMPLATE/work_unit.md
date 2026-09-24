@@ -1,7 +1,7 @@
 ---
 name: Work Unit (구현 최소 단위)
 about: workflow.md의 Work Unit 단위 — 하나의 PR로 구현·검증·리뷰할 수 있는 가장 작은 변화 단위. 부모 Issue의 Sub-issue로 연결한다.
-title: "[I-###-W-###] "
+title: '[I-###-W-###] '
 labels: ''
 ---
 

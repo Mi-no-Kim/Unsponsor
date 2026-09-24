@@ -1,7 +1,7 @@
 ---
 name: Issue (기능 단위 작업)
 about: workflow.md의 Issue 단위 — Phase 안에서 완성해야 하는 의미 있는 기능적 결과
-title: "[I-###] "
+title: '[I-###] '
 labels: enhancement
 ---
 

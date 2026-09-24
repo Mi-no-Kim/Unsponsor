@@ -1,7 +1,7 @@
 ---
 name: 버그 리포트
 about: main에 merge된 기능의 버그를 기록한다 — 작업 중인 Issue 범위 안의 버그는 그 Issue의 Work Unit으로 처리한다 (workflow.md "버그 처리")
-title: "[I-###] "
+title: '[I-###] '
 labels: bug
 ---
 

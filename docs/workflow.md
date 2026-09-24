@@ -65,11 +65,11 @@ Issue는 작업하는 도중에 수정하거나 추가할 수 있다. 화면처�
 
 Planning 모델과 Git 모델은 분리하고, 아래 규칙으로 연결한다.
 
-| Planning | Git |
-| --- | --- |
-| Phase | Milestone |
-| Issue | GitHub Issue |
-| Work Unit | GitHub Sub-issue |
+| Planning    | Git                                      |
+| ----------- | ---------------------------------------- |
+| Phase       | Milestone                                |
+| Issue       | GitHub Issue                             |
+| Work Unit   | GitHub Sub-issue                         |
 | (구현 단위) | PR — Work Unit(Sub-issue) 하나당 PR 하나 |
 
 Milestone 하나가 Phase 하나에 대응하고, 그 안의 Issue들이 Phase 안에서 완성해야 할 결과 단위이며, 각 Issue 아래 Sub-issue가 실제 구현 최소 단위(Work Unit)다. Sub-issue 하나는 PR 하나로 구현·검증·리뷰된다.
@@ -80,11 +80,11 @@ Sub-issue에는 Milestone을 붙이지 않는다. Milestone에는 Issue만 넣�
 
 ### 라벨
 
-| 대상 | 라벨 | 붙이는 기준 |
-| --- | --- | --- |
-| Issue | `enhancement` | 계획된 Issue 전부 — 기능·설정·문서 등 작업 종류와 관계없다 |
-| Issue | `bug` | main에 merge된 기능의 버그로 연 Issue (버그 템플릿이 자동으로 붙인다) |
-| Work Unit | `work:feat` / `work:fix` / `work:test` / `work:refactor` / `work:docs` / `work:chore` 중 하나 | 그 Work PR의 squash 커밋 type과 같게 |
+| 대상      | 라벨                                                                                          | 붙이는 기준                                                           |
+| --------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Issue     | `enhancement`                                                                                 | 계획된 Issue 전부 — 기능·설정·문서 등 작업 종류와 관계없다            |
+| Issue     | `bug`                                                                                         | main에 merge된 기능의 버그로 연 Issue (버그 템플릿이 자동으로 붙인다) |
+| Work Unit | `work:feat` / `work:fix` / `work:test` / `work:refactor` / `work:docs` / `work:chore` 중 하나 | 그 Work PR의 squash 커밋 type과 같게                                  |
 
 - Work Unit 라벨은 하나만 붙인다. Work PR은 squash되어 커밋 하나가 되므로, 그 커밋의 type(`commit-convention.md`)이 곧 라벨이다. type 하나로 요약이 안 되면 라벨을 여러 개 붙이지 않고 Work Unit을 나눈다 (위 "분해 기준").
 - 코드 변경과 함께 고친 문서(예: 기능을 구현하면서 `schema.md`나 `decisions.md`를 갱신)는 그 코드 변경의 type을 따른다. `work:docs`는 문서만 바꾼 Work Unit에만 붙인다 — `commit-convention.md`의 `docs`("문서만 변경")와 같은 기준이다.
@@ -94,10 +94,10 @@ Sub-issue에는 Milestone을 붙이지 않는다. Milestone에는 Issue만 넣�
 
 ### 버그 처리
 
-| 상황 | 새 Issue | 처리 |
-| --- | --- | --- |
-| 지금 작업 중인 Issue 범위 안에서 발견한 버그 | 만들지 않음 | 같은 Issue에 새 Work Unit으로 추가하거나, 지금 Work PR 안에서 리뷰 반영 수정으로 처리 |
-| 이미 main에 merge된 기능의 버그 | 새 GitHub Issue (버그 템플릿) | 일반 Issue와 같은 흐름: `work/*` → `issue/*`(squash) → `main` |
+| 상황                                         | 새 Issue                      | 처리                                                                                  |
+| -------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------- |
+| 지금 작업 중인 Issue 범위 안에서 발견한 버그 | 만들지 않음                   | 같은 Issue에 새 Work Unit으로 추가하거나, 지금 Work PR 안에서 리뷰 반영 수정으로 처리 |
+| 이미 main에 merge된 기능의 버그              | 새 GitHub Issue (버그 템플릿) | 일반 Issue와 같은 흐름: `work/*` → `issue/*`(squash) → `main`                         |
 
 새로 만든 버그 Issue도 일반 Issue와 같은 I 번호를 쓴다 — 같은 브랜치 규칙(`issue/i-{이슈번호}-...`)을 타기 때문이다. 일반 Issue와는 `bug` 라벨로 구분하고, Milestone에는 배정하지 않는다 (D-001, D-033).
 
@@ -110,18 +110,18 @@ Sub-issue에는 Milestone을 붙이지 않는다. Milestone에는 Issue만 넣�
 
 ### 브랜치 네이밍
 
-| 대상 | 형식 | 예시 |
-| --- | --- | --- |
-| Issue 브랜치 | `issue/i-{이슈번호}-{슬러그}` | `issue/i-023-product-search` |
+| 대상             | 형식                                          | 예시                          |
+| ---------------- | --------------------------------------------- | ----------------------------- |
+| Issue 브랜치     | `issue/i-{이슈번호}-{슬러그}`                 | `issue/i-023-product-search`  |
 | Work Unit 브랜치 | `work/i-{이슈번호}-w-{워크유닛번호}-{슬러그}` | `work/i-023-w-068-search-api` |
 
 ### 제목 표기
 
 GitHub Issue·Sub-issue 제목 앞에 프로젝트 번호를 붙인다. 번호 자릿수는 브랜치 네이밍과 같게 쓴다 (D-032).
 
-| 대상 | 형식 | 예시 |
-| --- | --- | --- |
-| Issue | `[I-{이슈번호}] {제목}` | `[I-003] 자막/STT 확보` |
+| 대상      | 형식                                     | 예시                                      |
+| --------- | ---------------------------------------- | ----------------------------------------- |
+| Issue     | `[I-{이슈번호}] {제목}`                  | `[I-003] 자막/STT 확보`                   |
 | Work Unit | `[I-{이슈번호}-W-{워크유닛번호}] {제목}` | `[I-003-W-012] 자막 라이브러리 추출 구현` |
 
 GitHub 기능(Sub-issue 연결, PR의 Issue 링크)에는 GitHub `#` 번호를 쓰고, 커밋 footer에는 프로젝트 번호를 쓴다 (`commit-convention.md`).

@@ -24,16 +24,16 @@
 
 상황별로 먼저 확인해야 하는 문서:
 
-| 상황 | 확인할 문서 |
-| --- | --- |
-| Git 상태변경(commit/push/PR) | `rules.md` 3번, `commit-convention.md` |
-| PR 생성 | `pr-template-work.md` 또는 `pr-template-issue.md` |
-| Feature 새로 정의/변경 | `feature.md` |
-| Issue/Work Unit 새로 만들기 | `workflow.md` "분해 기준" |
-| 설계 판단이 필요한 순간 | `rules.md` 2번(기록 대상), `decisions.md` |
-| 코드/문서 리뷰 | `review-template.md` |
-| Protected Change(DB·API·Dependency 등) | `rules.md` 1번 — 승인 전 확정·실행 금지 |
-| 문서 자체를 수정할 때 | `rules.md` 6번 |
+| 상황                                   | 확인할 문서                                       |
+| -------------------------------------- | ------------------------------------------------- |
+| Git 상태변경(commit/push/PR)           | `rules.md` 3번, `commit-convention.md`            |
+| PR 생성                                | `pr-template-work.md` 또는 `pr-template-issue.md` |
+| Feature 새로 정의/변경                 | `feature.md`                                      |
+| Issue/Work Unit 새로 만들기            | `workflow.md` "분해 기준"                         |
+| 설계 판단이 필요한 순간                | `rules.md` 2번(기록 대상), `decisions.md`         |
+| 코드/문서 리뷰                         | `review-template.md`                              |
+| Protected Change(DB·API·Dependency 등) | `rules.md` 1번 — 승인 전 확정·실행 금지           |
+| 문서 자체를 수정할 때                  | `rules.md` 6번                                    |
 
 ## 로컬 실행
 
