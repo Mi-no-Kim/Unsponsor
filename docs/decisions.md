@@ -501,12 +501,14 @@ project-spec.md의 "오픈 이슈" 섹션은 아직 결론이 안 난 질문들�
 
 #### D-041 — CI에서 Integration Test의 Advisory/Required 구분: PR 대상 브랜치 기준으로 구현
 
-- 버전: v1
+- 버전: v2
 - 상태: 확정
 - 질문: `rules.md` 5번은 Integration Test를 "개별 Work Unit PR 단계에서는 Advisory, Issue 통합 단계에서는 Required"로 정했는데, I-001-W-001(CI 워크플로 추가)에서 이를 실제로 어떻게 구현하는가?
-- 결정: backend CI에서 컴파일(`./gradlew assemble`)과 테스트(`./gradlew test`)를 분리한다. `assemble`은 PR 대상 브랜치와 무관하게 항상 Required다. `test`(현재 유일한 테스트인 `UnsponsorBackendApplicationTests.contextLoads` — Testcontainers로 MySQL을 띄우는 사실상 Integration Test)는 PR 대상이 `main`이면 Required, `issue/*`면 GitHub Actions의 `continue-on-error: true`로 Advisory 처리한다(실패해도 워크플로 전체는 성공으로 끝나 머지를 막지 않음).
-- 이유: `rules.md` 5번 문구를 그대로 따르되, 지금 존재하는 유일한 테스트가 Testcontainers로 실제 DB를 띄워 Spring 컨텍스트를 로드하는 것이라 Unit Test보다 Integration Test 성격에 가깝다고 판단했다. 컴파일은 어느 PR 대상에서도 깨지면 안 되는 문제라 분리해서 항상 Required로 남긴다.
-- 검토한 대안: 구분 없이 두 PR 대상 모두 Required로 유지 — 가장 단순하지만 `rules.md` 5번과 어긋나 채택 안 함 / `dorny/paths-filter` 같은 서드파티 action으로 job 자체를 분리 — 외부 action 의존성이 새로 생겨 필요 이상으로 복잡해 채택 안 함
+- 결정: backend CI에서 컴파일(`./gradlew assemble`)과 테스트(`./gradlew test`)를 분리한다. 둘 다 PR 대상 브랜치와 무관하게 항상 Required다.
+- 이유: Integration Test를 Work Unit 단계에서 Advisory로 두는 방침 자체를 D-043에서 폐기했으므로, 이 구현도 구분 없이 항상 Required로 맞춘다.
+- 검토한 대안: v1에서 검토한 대안과 동일 (아래 이전 버전 참고)
+
+  **이전 버전 (v1)**: backend test(`contextLoads`)를 PR 대상에 따라 다르게 취급했다 — `main`으로 가는 PR은 Required, `issue/*`로 가는 PR은 `continue-on-error: true`로 Advisory(실패해도 워크플로 전체는 성공 처리) 했다. Advisory 처리가 실패를 CI 성공 표시 뒤에 숨겨 놓치기 쉽고, Work Unit 여러 개에 걸쳐 문제가 누적된 채 Issue 통합 단계까지 넘어가면 원인 추적이 어려워지는 문제가 있어 D-043에서 이 구분 자체를 폐기했다.
 
 #### D-042 — Prettier를 레포 전체(백엔드·파이프라인·프론트엔드 무관 JSON/YAML/Markdown) 대상으로 실제 동작시킴
 
@@ -516,5 +518,14 @@ project-spec.md의 "오픈 이슈" 섹션은 아직 결론이 안 난 질문들�
 - 결정: (1) 레포 루트에 `package.json`을 새로 만들고 prettier를 devDependency로 추가한다(`format:check`/`format:write` 스크립트). `.prettierrc`가 이미 루트에 있던 것과 위치가 맞고, 루트에서 `prettier --check .`를 실행하면 backend/frontend/pipeline/docs 전체를 한 번에 커버한다. (2) 별도의 `format-ci.yml` 워크플로를 새로 만들어 `backend-ci.yml`/`frontend-ci.yml`과 달리 `paths` 제한 없이 모든 PR(main, issue/*)에서 항상 실행한다 — `rules.md` 5번의 "Format: Required"는 PR 대상과 무관하게 항상 Required이므로 Integration Test(D-041)와 달리 `continue-on-error` 없이 둔다. Prettier는 실행 디렉터리의 `.gitignore`를 자동으로 따르므로(node_modules·빌드 산출물 등은 이미 각 `.gitignore`가 커버), `.prettierignore`는 기존 내용을 그대로 둔다. 기존 파일 23개를 `format:write`로 일괄 포맷팅했다(전부 공백·따옴표 통일·표 정렬 등 스타일 변경만이고 의미 변경은 없음을 diff로 확인).
 - 이유: `.prettierrc`가 프론트엔드 폴더가 아니라 레포 루트에 있다는 건 원래도 레포 전체(특히 `docs/`·백엔드 리소스·`.github/`의 JSON/YAML/Markdown)를 대상으로 하려던 의도로 보이는데, 실제로 이를 실행할 `package.json`이 없어 설정만 있고 동작은 안 하고 있었다. CI를 새로 설계하면서(I-001-W-001) 이 gap이 드러났다. Format 체크를 `backend-ci.yml`/`frontend-ci.yml` 안에 넣으면 D-041에서 정한 path 기준 스코프 분리가 깨지므로 별도 워크플로로 분리했다.
 - 검토한 대안: prettier를 `frontend/package.json`에만 추가하고 상위 경로를 가리켜 실행 — 의존성이 있는 위치(frontend)와 실제 포맷 범위(레포 전체)가 어긋나 부자연스러워 채택 안 함 / format 체크를 기존 `backend-ci.yml`/`frontend-ci.yml`에 나눠 넣기 — 두 워크플로의 `paths` 스코프(D-041) 원칙과 어긋나 채택 안 함
+
+#### D-043 — rules.md 5번 Integration Test 기본값 변경: Work Unit 단계 Advisory 폐기, 항상 Required로 통일
+
+- 버전: v1
+- 상태: 확정
+- 질문: `rules.md` 5번은 Integration Test를 "개별 Work Unit PR 단계에서는 Advisory, Issue 통합 단계에서는 Required"로 정해뒀는데, D-041에서 이를 실제로 구현(`continue-on-error`)해보니 issue/* PR에서 테스트가 실패해도 워크플로 전체는 성공(초록불)으로 표시돼 실패가 눈에 띄지 않고, 여러 Work Unit에 걸쳐 문제가 누적된 채 Issue 통합 단계까지 넘어가면 원인 추적이 어려워지는 문제가 드러났다. 이 기본값을 유지할지 바꿀지?
+- 결정: Integration Test도 Unit Test 등 다른 항목과 동일하게, PR 대상과 무관하게 항상 Required로 통일한다. `rules.md` 5번의 해당 항목을 "개별 Work Unit PR 단계에서는 Advisory, Issue 통합 단계에서는 Required" → "있으면 Required"로 변경한다.
+- 이유: 이 구분을 둔 원래 취지는 "테스트를 다시 돌려야 할 만큼 의미 있는 수정이 있으면 돌리고, 아니면 생략해도 된다"는 유연성이었던 것으로 보이는데, 실제로 이를 세밀하게 컨트롤하기는 어렵다. 반면 `continue-on-error`로 Advisory 처리했을 때의 부작용은 명확하다 — 실패가 CI 성공 표시 뒤에 숨어 리뷰어가 놓치기 쉽고, Work Unit 여러 개에 걸쳐 문제가 누적된 채 Issue 통합 단계까지 넘어가면 어느 Work Unit에서 생긴 문제인지 추적하기 어려워진다. 얻는 유연성보다 잃는 안전성이 커서 전부 Required로 통일한다.
+- 검토한 대안: Advisory는 유지하되 실패 시 PR에 자동 코멘트를 남기거나 워크플로 요약에 눈에 띄게 표시 — 구현이 더 필요하고, 지금은 CI를 막 도입하는 단계라 "일부러 미완성 상태로 Work Unit을 merge"해야 할 실제 필요가 검증되지 않아 보류. 필요성이 생기면 그때 다시 논의한다.
 
 <!-- 새 결정이 확정되면 해당 카테고리 아래에 이어서 추가한다. -->

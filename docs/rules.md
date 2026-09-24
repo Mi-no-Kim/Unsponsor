@@ -58,7 +58,7 @@ Protected Change와는 별개 기준이다 — Protected Change는 항상 승인
 - Type Check: 해당하면 Required (예: TypeScript)
 - Build: 해당하면 Required
 - Unit Test: 있으면 Required
-- Integration Test: 개별 Work Unit PR 단계에서는 Advisory, Issue 통합 단계에서는 Required
+- Integration Test: 있으면 Required
 
 존재하지 않는 도구·테스트를 이 기준을 맞추기 위해 새로 추가하지 않는다 — 필요하면 별도로 논의한다 (Dependency 추가는 Protected Change).
 
