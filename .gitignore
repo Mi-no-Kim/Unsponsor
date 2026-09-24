@@ -1,0 +1,51 @@
+# 환경변수
+.env
+!*.env.example
+
+# Java / Gradle (backend/)
+.gradle/
+backend/build/
+backend/out/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Python (pipeline/)
+**/__pycache__/
+*.py[cod]
+pipeline/.venv/
+pipeline/venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / React (frontend/)
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+npm-debug.log*
+yarn-error.log*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# 개인 메모 (git 추적 제외)
+docs/til/
+
+# 채널 풀 시드 (실제 채널 목록은 비공개 — D-027)
+pipeline/channels.local.json
+
+# Claude 작업 임시 출력물 (나중에 삭제)
+/Claude outputs/
