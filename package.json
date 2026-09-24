@@ -1,0 +1,11 @@
+{
+  "name": "unsponsor",
+  "private": true,
+  "devDependencies": {
+    "prettier": "^3.9.9"
+  },
+  "scripts": {
+    "format:check": "prettier --check .",
+    "format:write": "prettier --write ."
+  }
+}
