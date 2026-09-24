@@ -1,0 +1,36 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - 'issue/*'
+    paths:
+      - 'backend/**'
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - run: chmod +x gradlew
+
+      - name: Build (compile)
+        run: ./gradlew assemble
+
+      # Integration Test(Testcontainers 기반 contextLoads)는 rules.md 5번대로
+      # issue/* PR(Work Unit 단계)에서는 Advisory, main PR(Issue 통합 단계)에서는 Required (D-041)
+      - name: Test
+        run: ./gradlew test
+        continue-on-error: ${{ github.base_ref != 'main' }}
