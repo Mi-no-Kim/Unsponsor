@@ -1,0 +1,6 @@
+[project]
+name = "unsponsor-pipeline"
+version = "0.1.0"
+description = "데이터 파이프라인 — 채널 수집, 자막/STT, 광고 필터링, LLM 요약, 임베딩"
+requires-python = ">=3.14"
+dependencies = []

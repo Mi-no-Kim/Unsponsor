@@ -1,0 +1,12 @@
+{
+  "note": "channels.local.json 템플릿. 실제 값은 channels.local.json에 채우고, 이 파일은 placeholder만 유지한다 (gitignore 대상 아님, 커밋됨).",
+  "category": "smartphone",
+  "confirmed_common_product": "",
+  "channels": [
+    {
+      "name": "예시채널",
+      "handle": "@example",
+      "channel_id": "UCXXXXXXXXXXXXXXXXXXXXXX"
+    }
+  ]
+}
