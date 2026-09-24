@@ -29,8 +29,5 @@ jobs:
       - name: Build (compile)
         run: ./gradlew assemble
 
-      # Integration Test(Testcontainers 기반 contextLoads)는 rules.md 5번대로
-      # issue/* PR(Work Unit 단계)에서는 Advisory, main PR(Issue 통합 단계)에서는 Required (D-041)
       - name: Test
         run: ./gradlew test
-        continue-on-error: ${{ github.base_ref != 'main' }}
