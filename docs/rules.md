@@ -30,7 +30,7 @@ Protected Change와는 별개 기준이다 — Protected Change는 항상 승인
 - 상태를 바꾸는 명령(add·commit·branch·push·reset·rebase·checkout 경로·restore·stash·fetch·gc 등)은 지시가 있을 때만 실행한다.
 - 다음은 명시적 지시 없이는 절대 실행하지 않는다: `push --force`(`--force-with-lease` 포함), `reset --hard`, `clean -fd`/`-fdx`, `branch -D`, 기타 shared history를 바꾸는 작업.
 - 커밋 메시지는 Conventional Commits 형식을 쓴다: `type: description` (`feat`/`fix`/`test`/`refactor`/`docs`/`chore`). 세부 규칙과 타입별 예시는 `commit-convention.md` 참고. `fix`, `update`, `temp` 같은 의미 없는 메시지는 쓰지 않는다.
-- **commit·push·PR 생성은 그 행동을 사용자가 명시적으로 지시했을 때만 실행한다.** 하나의 지시가 다음 단계까지 자동으로 포함하지 않는다 — 예를 들어 "commit 해줘"는 commit만 하고, 이어서 "push하고 pr 작성해줘"라고 지시받아야 그 두 가지를 실행한다 (D-002).
+- **push·PR 생성은 그 행동을 사용자가 명시적으로 지시했을 때만 실행한다.** 하나의 지시가 다음 단계까지 자동으로 포함하지 않는다 — 예를 들어 "push해줘"는 push만 하고, 이어서 "pr 작성해줘"라고 지시받아야 PR도 생성한다. **commit은 예외로, 사용자의 별도 지시 없이 AI가 자율적으로 실행할 수 있다** (D-002).
 - PR을 생성하기 전에는 `pr-template-work.md` 또는 `pr-template-issue.md`의 확인 사항 체크리스트가 실제로 충족됐는지 확인한다. 충족되지 않은 항목이 있으면 PR을 만들지 않고, 무엇이 비어있는지 사용자에게 보고한다.
 - 커밋 메시지와 PR 본문은 해당 템플릿(`commit-convention.md`, `pr-template-work.md`/`pr-template-issue.md`) 형식을 그대로 따른다 (D-003).
 
@@ -40,12 +40,12 @@ Protected Change와는 별개 기준이다 — Protected Change는 항상 승인
 
 리뷰 시 문제의 심각도:
 
-| 등급 | 의미 |
-| --- | --- |
-| BLOCKER | 지금 상태로 두면 안 되는 심각한 문제 (보안, 데이터 손상, 빌드/실행 불가) |
-| MAJOR | 기능적으로 의미 있는 결함, 요구사항 미충족 |
-| MINOR | 당장 기능엔 문제없지만 실제로 고칠 필요가 있는 구체적 약점 |
-| SUGGESTION | 선택적 개선 제안. 지금 막을 필요는 없음 |
+| 등급       | 의미                                                                     |
+| ---------- | ------------------------------------------------------------------------ |
+| BLOCKER    | 지금 상태로 두면 안 되는 심각한 문제 (보안, 데이터 손상, 빌드/실행 불가) |
+| MAJOR      | 기능적으로 의미 있는 결함, 요구사항 미충족                               |
+| MINOR      | 당장 기능엔 문제없지만 실제로 고칠 필요가 있는 구체적 약점               |
+| SUGGESTION | 선택적 개선 제안. 지금 막을 필요는 없음                                  |
 
 리뷰 결과: **PASS**(BLOCKER·MAJOR 없음) / **CHANGES REQUIRED**(BLOCKER나 MAJOR가 남아있음) / **BLOCKED**(리뷰 자체를 완료할 근거가 부족함).
 
@@ -58,7 +58,7 @@ Protected Change와는 별개 기준이다 — Protected Change는 항상 승인
 - Type Check: 해당하면 Required (예: TypeScript)
 - Build: 해당하면 Required
 - Unit Test: 있으면 Required
-- Integration Test: 개별 Work Unit PR 단계에서는 Advisory, Issue 통합 단계에서는 Required
+- Integration Test: 있으면 Required
 
 존재하지 않는 도구·테스트를 이 기준을 맞추기 위해 새로 추가하지 않는다 — 필요하면 별도로 논의한다 (Dependency 추가는 Protected Change).
 

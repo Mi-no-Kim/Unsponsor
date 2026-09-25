@@ -1,3 +1,11 @@
 spring:
   application:
     name: unsponsor-backend
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:unsponsor}?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_0900_ai_ci
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
