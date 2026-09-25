@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +31,18 @@ class UnsponsorBackendApplicationTests {
 			"products",
 			"product_match_candidates",
 			"product_match_evidence");
+	private static final Set<String> V3_TABLES = Set.of(
+			"reviews",
+			"product_aggregates",
+			"aspects",
+			"review_points",
+			"point_aspects",
+			"product_aspect_stats",
+			"aspect_candidates",
+			"aspect_candidate_evidence");
+	private static final Set<String> SCHEMA_TABLES = Stream.of(V1_TABLES, V2_TABLES, V3_TABLES)
+			.flatMap(Set::stream)
+			.collect(Collectors.toUnmodifiableSet());
 
 	@Autowired
 	JdbcTemplate jdbcTemplate;
@@ -43,7 +57,7 @@ class UnsponsorBackendApplicationTests {
 				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("1", "2"), appliedVersions);
+		assertEquals(List.of("1", "2", "3"), appliedVersions);
 	}
 
 	@Test
@@ -86,6 +100,44 @@ class UnsponsorBackendApplicationTests {
 				String.class);
 
 		assertEquals(V2_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void createsV3Tables() {
+		List<String> tableNames = jdbcTemplate.queryForList(
+				"""
+				SELECT table_name
+				FROM information_schema.tables
+				WHERE table_schema = DATABASE()
+				  AND table_name IN (
+				    'reviews',
+				    'product_aggregates',
+				    'aspects',
+				    'review_points',
+				    'point_aspects',
+				    'product_aspect_stats',
+				    'aspect_candidates',
+				    'aspect_candidate_evidence'
+				  )
+				""",
+				String.class);
+
+		assertEquals(V3_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void createsAllSchemaTables() {
+		List<String> tableNames = jdbcTemplate.queryForList(
+				"""
+				SELECT table_name
+				FROM information_schema.tables
+				WHERE table_schema = DATABASE()
+				  AND table_type = 'BASE TABLE'
+				  AND table_name <> 'flyway_schema_history'
+				""",
+				String.class);
+
+		assertEquals(SCHEMA_TABLES, new HashSet<>(tableNames));
 	}
 
 	@Test
