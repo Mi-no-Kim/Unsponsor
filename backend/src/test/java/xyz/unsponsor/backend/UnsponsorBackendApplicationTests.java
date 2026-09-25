@@ -1,7 +1,6 @@
 package xyz.unsponsor.backend;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashSet;
 import java.util.List;
@@ -23,6 +22,13 @@ class UnsponsorBackendApplicationTests {
 			"video_transcripts",
 			"ad_segments",
 			"video_processing_queue");
+	private static final Set<String> V2_TABLES = Set.of(
+			"categories",
+			"brands",
+			"series",
+			"products",
+			"product_match_candidates",
+			"product_match_evidence");
 
 	@Autowired
 	JdbcTemplate jdbcTemplate;
@@ -32,12 +38,12 @@ class UnsponsorBackendApplicationTests {
 	}
 
 	@Test
-	void appliesV1Migration() {
+	void appliesMigrations() {
 		List<String> appliedVersions = jdbcTemplate.queryForList(
-				"SELECT version FROM flyway_schema_history WHERE success = TRUE",
+				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertTrue(appliedVersions.contains("1"));
+		assertEquals(List.of("1", "2"), appliedVersions);
 	}
 
 	@Test
@@ -59,6 +65,27 @@ class UnsponsorBackendApplicationTests {
 				String.class);
 
 		assertEquals(V1_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void createsV2Tables() {
+		List<String> tableNames = jdbcTemplate.queryForList(
+				"""
+				SELECT table_name
+				FROM information_schema.tables
+				WHERE table_schema = DATABASE()
+				  AND table_name IN (
+				    'categories',
+				    'brands',
+				    'series',
+				    'products',
+				    'product_match_candidates',
+				    'product_match_evidence'
+				  )
+				""",
+				String.class);
+
+		assertEquals(V2_TABLES, new HashSet<>(tableNames));
 	}
 
 	@Test
