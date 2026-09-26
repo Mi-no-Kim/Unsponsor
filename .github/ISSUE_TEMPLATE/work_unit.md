@@ -20,3 +20,11 @@ labels: ''
 
 - [ ]
 - [ ]
+
+## 포함 예정 Protected Change
+
+<!-- rules.md 1번 항목(DB 스키마·API 계약·Dependency·인증/보안 등) 중 이 Issue에 들어갈 것. 작업 전에 승인받는다. 없으면 "없음" -->
+
+## 커밋 예시
+
+<!-- commit-convention.md의 규칙을 확인하여 작성한다. -->
