@@ -189,8 +189,8 @@ def _read_selected_video_ids(payload: dict[str, object]) -> tuple[str, ...] | No
     raw_video_ids = payload["selected_video_ids"]
     if not isinstance(raw_video_ids, list):
         raise ConfigurationError("selected_video_ids must be an array")
-    if not 10 <= len(raw_video_ids) <= 20:
-        raise ConfigurationError("selected_video_ids must contain between 10 and 20 entries")
+    if not 10 <= len(raw_video_ids) <= 50:
+        raise ConfigurationError("selected_video_ids must contain between 10 and 50 entries")
 
     video_ids: list[str] = []
     seen_video_ids: set[str] = set()

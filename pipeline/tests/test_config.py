@@ -72,8 +72,8 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertNotIn("super-secret-api-key", repr(settings))
         self.assertNotIn("super-secret-password", repr(settings))
 
-    def test_loads_a_private_selection_of_ten_to_twenty_video_ids(self) -> None:
-        video_ids = _video_ids(10)
+    def test_loads_a_private_selection_of_ten_to_fifty_video_ids(self) -> None:
+        video_ids = _video_ids(50)
         self.write_channels(
             {
                 "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
@@ -88,17 +88,23 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(settings.selected_video_ids, tuple(video_ids))
 
     def test_rejects_video_selection_outside_the_ph1_range(self) -> None:
-        self.write_channels(
-            {
-                "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
-                "selected_video_ids": _video_ids(9),
-            }
-        )
+        for count in (9, 51):
+            with self.subTest(count=count):
+                self.write_channels(
+                    {
+                        "channels": [
+                            {"channel_id": "UCexample", "language_code": "ko"}
+                        ],
+                        "selected_video_ids": _video_ids(count),
+                    }
+                )
 
-        with self.assertRaisesRegex(ConfigurationError, "between 10 and 20"):
-            load_settings(
-                self.test_repository_root, self.channel_seed_path, environment={}
-            )
+                with self.assertRaisesRegex(ConfigurationError, "between 10 and 50"):
+                    load_settings(
+                        self.test_repository_root,
+                        self.channel_seed_path,
+                        environment={},
+                    )
 
     def test_rejects_duplicate_video_ids_without_echoing_them(self) -> None:
         video_ids = _video_ids(10)
