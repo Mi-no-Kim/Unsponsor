@@ -127,10 +127,10 @@ project-root/
 │   ├── .env.example
 │   └── package.json
 
-├── docs/                 # 기획 문서 버전 관리 (claude.ai 프로젝트 문서 사본)
+├── docs/                 # 기획 문서 원본 (AI 측 프로젝트·메모리 사본은 이를 미러링)
 │   ├── project-spec.md
 │   ├── workflow.md
-│   └── ...               # decisions.md 등 claude.ai 프로젝트 문서 전체 (rules.md 7번)
+│   └── ...               # decisions.md 등 기획 문서 전체 (rules.md 7번)
 
 ├── .github/              # Issue 템플릿, CI 워크플로 (디렉토리별 조건부 빌드)
 ├── .gitignore
@@ -139,7 +139,7 @@ project-root/
 └── README.md
 ```
 
-- **docs/** — `project-spec.md`, `workflow.md`, `decisions.md` 등 claude.ai 프로젝트 문서를 코드와 함께 버전 관리하기 위해 레포에도 사본을 둔다. claude.ai 프로젝트 쪽 문서가 원본이며, 레포 쪽은 갱신 시점마다 동기화한다.
+- **docs/** — `project-spec.md`, `workflow.md`, `decisions.md` 등 기획 문서의 원본이다. AI 도구가 각자 편의를 위해 별도로 들고 있는 프로젝트·메모리 사본(예: claude.ai 프로젝트)은 전부 미러이며, 원본이 바뀌면 그 즉시 동기화한다 (`rules.md` 7번).
 - **환경변수** — 컴포넌트마다 필요한 값이 달라서(DB 접속정보, YouTube API 키, LLM API 키, 백엔드 API URL 등) 컴포넌트 폴더 안에 각자 `.env`(실제 값, `.gitignore` 처리)와 `.env.example`(템플릿, 커밋)을 둔다. 프로덕션 배포 시 실제 비밀값은 `.env` 대신 AWS Secrets Manager/Parameter Store 사용을 검토 (AWS 배포 방식 결정과 함께 정리 예정).
 - **docker-compose.yml** — 배포용 Docker 사용 여부와 별개로, 로컬 개발 환경에서 MySQL·Elasticsearch를 바로 띄우기 위한 용도로 둔다.
 - **LICENSE** — MIT. 포트폴리오로 공개할 레포에 가장 널리 쓰이는 permissive 라이선스이고, 재사용·상업적 활용 제약이 없어 무난한 선택.

@@ -16,7 +16,7 @@
 - [ ] Work Unit의 Done When 항목 충족 확인
 - [ ] Protected Change(DB 스키마·API 계약·Dependency 등)가 포함되어 있다면 사전에 승인받았다 (`rules.md` 참고)
 - [ ] 관련 CI 통과
-- [ ] claude.ai 프로젝트 문서를 수정했다면, 레포의 `docs/` 사본과 내용이 일치하는지 다시 확인했다 (`rules.md` 7번)
+- [ ] `docs/` 문서(원본)를 수정했다면, AI 도구가 들고 있는 프로젝트·메모리 사본(예: claude.ai 프로젝트)과 내용이 일치하는지 다시 확인했다 (`rules.md` 7번)
 
 ## 테스트
 
