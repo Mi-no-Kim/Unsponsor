@@ -68,8 +68,62 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(settings.mysql.port, 3306)
         self.assertEqual(settings.channels[0].language_code, "ko")
         self.assertEqual(settings.channels[1].language_code, "en-US")
+        self.assertIsNone(settings.selected_video_ids)
         self.assertNotIn("super-secret-api-key", repr(settings))
         self.assertNotIn("super-secret-password", repr(settings))
+
+    def test_loads_a_private_selection_of_ten_to_fifty_video_ids(self) -> None:
+        video_ids = _video_ids(50)
+        self.write_channels(
+            {
+                "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
+                "selected_video_ids": video_ids,
+            }
+        )
+
+        settings = load_settings(
+            self.test_repository_root, self.channel_seed_path, environment={}
+        )
+
+        self.assertEqual(settings.selected_video_ids, tuple(video_ids))
+
+    def test_rejects_video_selection_outside_the_ph1_range(self) -> None:
+        for count in (9, 51):
+            with self.subTest(count=count):
+                self.write_channels(
+                    {
+                        "channels": [
+                            {"channel_id": "UCexample", "language_code": "ko"}
+                        ],
+                        "selected_video_ids": _video_ids(count),
+                    }
+                )
+
+                with self.assertRaisesRegex(ConfigurationError, "between 10 and 50"):
+                    load_settings(
+                        self.test_repository_root,
+                        self.channel_seed_path,
+                        environment={},
+                    )
+
+    def test_rejects_duplicate_video_ids_without_echoing_them(self) -> None:
+        video_ids = _video_ids(10)
+        video_ids[-1] = video_ids[0]
+        self.write_channels(
+            {
+                "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
+                "selected_video_ids": video_ids,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ConfigurationError, "duplicate video IDs"
+        ) as error:
+            load_settings(
+                self.test_repository_root, self.channel_seed_path, environment={}
+            )
+
+        self.assertNotIn(video_ids[0], str(error.exception))
 
     def test_process_environment_overrides_dotenv_values(self) -> None:
         settings = load_settings(
@@ -130,3 +184,14 @@ class LoadSettingsTests(unittest.TestCase):
         for key in REQUIRED_ENVIRONMENT_KEYS:
             self.assertIn(f"{key}=", environment_example)
         self.assertEqual(channels_example["channels"][0]["language_code"], "ko")
+        self.assertEqual(len(channels_example["selected_video_ids"]), 10)
+        self.assertTrue(
+            all(
+                video_id.startswith("<video-id-")
+                for video_id in channels_example["selected_video_ids"]
+            )
+        )
+
+
+def _video_ids(count: int) -> list[str]:
+    return [f"video{index:06d}" for index in range(count)]

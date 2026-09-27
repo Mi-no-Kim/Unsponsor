@@ -5,5 +5,17 @@
       "channel_id": "UCXXXXXXXXXXXXXXXXXXXXXX",
       "language_code": "ko"
     }
+  ],
+  "selected_video_ids": [
+    "<video-id-01>",
+    "<video-id-02>",
+    "<video-id-03>",
+    "<video-id-04>",
+    "<video-id-05>",
+    "<video-id-06>",
+    "<video-id-07>",
+    "<video-id-08>",
+    "<video-id-09>",
+    "<video-id-10>"
   ]
 }

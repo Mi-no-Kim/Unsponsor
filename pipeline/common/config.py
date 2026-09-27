@@ -39,6 +39,7 @@ class PipelineSettings:
     youtube: YouTubeSettings
     mysql: MySqlSettings
     channels: tuple[ChannelSeed, ...]
+    selected_video_ids: tuple[str, ...] | None
 
 
 _REQUIRED_ENVIRONMENT_KEYS = (
@@ -50,6 +51,7 @@ _REQUIRED_ENVIRONMENT_KEYS = (
     "MYSQL_PASSWORD",
 )
 _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2})?$")
+_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def load_settings(
@@ -84,6 +86,8 @@ def load_settings(
     if not 1 <= mysql_port <= 65535:
         raise ConfigurationError("MYSQL_PORT must be between 1 and 65535")
 
+    channel_seed_document = _read_channel_seed_document(channel_seed_path)
+
     return PipelineSettings(
         youtube=YouTubeSettings(api_key=values["YOUTUBE_API_KEY"]),
         mysql=MySqlSettings(
@@ -93,7 +97,8 @@ def load_settings(
             user=values["MYSQL_USER"],
             password=values["MYSQL_PASSWORD"],
         ),
-        channels=_read_channel_seeds(channel_seed_path),
+        channels=_read_channel_seeds(channel_seed_document),
+        selected_video_ids=_read_selected_video_ids(channel_seed_document),
     )
 
 
@@ -123,7 +128,7 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def _read_channel_seeds(path: Path) -> tuple[ChannelSeed, ...]:
+def _read_channel_seed_document(path: Path) -> dict[str, object]:
     if not path.is_file():
         raise ConfigurationError("channels.local.json is required")
 
@@ -132,7 +137,14 @@ def _read_channel_seeds(path: Path) -> tuple[ChannelSeed, ...]:
     except json.JSONDecodeError as error:
         raise ConfigurationError("channels.local.json must contain valid JSON") from error
 
-    if not isinstance(payload, dict) or not isinstance(payload.get("channels"), list):
+    if not isinstance(payload, dict):
+        raise ConfigurationError("channels.local.json must contain an object")
+
+    return payload
+
+
+def _read_channel_seeds(payload: dict[str, object]) -> tuple[ChannelSeed, ...]:
+    if not isinstance(payload.get("channels"), list):
         raise ConfigurationError("channels.local.json must contain a channels array")
 
     raw_channels = payload["channels"]
@@ -168,3 +180,30 @@ def _read_channel_seeds(path: Path) -> tuple[ChannelSeed, ...]:
         )
 
     return tuple(channels)
+
+
+def _read_selected_video_ids(payload: dict[str, object]) -> tuple[str, ...] | None:
+    if "selected_video_ids" not in payload:
+        return None
+
+    raw_video_ids = payload["selected_video_ids"]
+    if not isinstance(raw_video_ids, list):
+        raise ConfigurationError("selected_video_ids must be an array")
+    if not 10 <= len(raw_video_ids) <= 50:
+        raise ConfigurationError("selected_video_ids must contain between 10 and 50 entries")
+
+    video_ids: list[str] = []
+    seen_video_ids: set[str] = set()
+    for index, raw_video_id in enumerate(raw_video_ids, 1):
+        if not isinstance(raw_video_id, str) or not _VIDEO_ID_PATTERN.fullmatch(
+            raw_video_id
+        ):
+            raise ConfigurationError(
+                f"Selected video entry {index} requires a valid YouTube video ID"
+            )
+        if raw_video_id in seen_video_ids:
+            raise ConfigurationError("selected_video_ids must not contain duplicate video IDs")
+        seen_video_ids.add(raw_video_id)
+        video_ids.append(raw_video_id)
+
+    return tuple(video_ids)
