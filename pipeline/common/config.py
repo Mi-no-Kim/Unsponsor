@@ -53,18 +53,21 @@ _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2})?$")
 
 
 def load_settings(
-    project_directory: Path,
+    repository_root: Path,
+    channel_seed_path: Path,
     *,
     environment: Mapping[str, str] | None = None,
 ) -> PipelineSettings:
-    """프로젝트 디렉터리의 비밀 설정과 채널 시드를 검증해 반환한다.
+    """공용 비밀 설정과 pipeline 전용 채널 시드를 검증해 반환한다.
 
     명시적으로 전달한 ``environment``는 테스트용이며, 전달하지 않으면 현재
-    프로세스 환경변수를 사용한다. 운영체제 환경변수는 ``.env`` 값을 덮어쓴다.
+    프로세스 환경변수를 사용한다. 운영체제 환경변수는 루트 ``.env`` 값을
+    덮어쓴다.
     """
 
-    project_directory = Path(project_directory)
-    values = _read_dotenv(project_directory / ".env")
+    repository_root = Path(repository_root)
+    channel_seed_path = Path(channel_seed_path)
+    values = _read_dotenv(repository_root / ".env")
     values.update(os.environ if environment is None else environment)
 
     missing_keys = [key for key in _REQUIRED_ENVIRONMENT_KEYS if not values.get(key)]
@@ -90,7 +93,7 @@ def load_settings(
             user=values["MYSQL_USER"],
             password=values["MYSQL_PASSWORD"],
         ),
-        channels=_read_channel_seeds(project_directory / "channels.local.json"),
+        channels=_read_channel_seeds(channel_seed_path),
     )
 
 

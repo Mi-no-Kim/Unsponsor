@@ -19,12 +19,17 @@ REQUIRED_ENVIRONMENT_KEYS = (
 
 
 class LoadSettingsTests(unittest.TestCase):
+    repository_root = Path(__file__).resolve().parents[2]
     pipeline_directory = Path(__file__).resolve().parents[1]
 
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.project_directory = Path(self.temporary_directory.name)
-        (self.project_directory / ".env").write_text(
+        self.test_repository_root = Path(self.temporary_directory.name)
+        self.channel_seed_path = (
+            self.test_repository_root / "pipeline" / "channels.local.json"
+        )
+        self.channel_seed_path.parent.mkdir()
+        (self.test_repository_root / ".env").write_text(
             "\n".join(
                 [
                     "YOUTUBE_API_KEY=super-secret-api-key",
@@ -50,12 +55,14 @@ class LoadSettingsTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def write_channels(self, contents: object) -> None:
-        (self.project_directory / "channels.local.json").write_text(
+        self.channel_seed_path.write_text(
             json.dumps(contents), encoding="utf-8"
         )
 
     def test_loads_valid_settings_without_exposing_secrets_in_repr(self) -> None:
-        settings = load_settings(self.project_directory, environment={})
+        settings = load_settings(
+            self.test_repository_root, self.channel_seed_path, environment={}
+        )
 
         self.assertEqual(settings.youtube.api_key, "super-secret-api-key")
         self.assertEqual(settings.mysql.port, 3306)
@@ -66,21 +73,24 @@ class LoadSettingsTests(unittest.TestCase):
 
     def test_process_environment_overrides_dotenv_values(self) -> None:
         settings = load_settings(
-            self.project_directory,
+            self.test_repository_root,
+            self.channel_seed_path,
             environment={"MYSQL_HOST": "database.internal"},
         )
 
         self.assertEqual(settings.mysql.host, "database.internal")
 
     def test_missing_required_settings_fails_before_external_clients_are_created(self) -> None:
-        (self.project_directory / ".env").write_text(
+        (self.test_repository_root / ".env").write_text(
             "YOUTUBE_API_KEY=super-secret-api-key\n", encoding="utf-8"
         )
 
         with self.assertRaisesRegex(
             ConfigurationError, "MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD"
         ) as error:
-            load_settings(self.project_directory, environment={})
+            load_settings(
+                self.test_repository_root, self.channel_seed_path, environment={}
+            )
 
         self.assertNotIn("super-secret-api-key", str(error.exception))
 
@@ -88,7 +98,9 @@ class LoadSettingsTests(unittest.TestCase):
         self.write_channels({"channels": [{"channel_id": "UCexample"}]})
 
         with self.assertRaisesRegex(ConfigurationError, "Channel entry 1"):
-            load_settings(self.project_directory, environment={})
+            load_settings(
+                self.test_repository_root, self.channel_seed_path, environment={}
+            )
 
     def test_rejects_duplicate_channel_ids_without_echoing_them(self) -> None:
         self.write_channels(
@@ -101,12 +113,14 @@ class LoadSettingsTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ConfigurationError, "duplicate channel IDs") as error:
-            load_settings(self.project_directory, environment={})
+            load_settings(
+                self.test_repository_root, self.channel_seed_path, environment={}
+            )
 
         self.assertNotIn("UCprivate", str(error.exception))
 
     def test_public_examples_show_the_required_configuration_shape(self) -> None:
-        environment_example = (self.pipeline_directory / ".env.example").read_text(
+        environment_example = (self.repository_root / ".env.example").read_text(
             encoding="utf-8"
         )
         channels_example = json.loads(
