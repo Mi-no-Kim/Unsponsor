@@ -29,6 +29,15 @@ class MySqlSettings:
 
 
 @dataclass(frozen=True)
+class QueueSettings:
+    """처리 큐의 재시도와 멈춤 복구 정책이다."""
+
+    max_attempts: int = 3
+    retry_backoff_base_seconds: int = 300
+    stale_after_seconds: int = 1800
+
+
+@dataclass(frozen=True)
 class ChannelSeed:
     channel_id: str
     language_code: str
@@ -40,6 +49,7 @@ class PipelineSettings:
     mysql: MySqlSettings
     channels: tuple[ChannelSeed, ...]
     selected_video_ids: tuple[str, ...] | None
+    queue: QueueSettings = field(default_factory=QueueSettings)
 
 
 _REQUIRED_ENVIRONMENT_KEYS = (
@@ -53,6 +63,9 @@ _REQUIRED_ENVIRONMENT_KEYS = (
 _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2})?$")
 _CHANNEL_ID_PATTERN = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_QUEUE_MAX_ATTEMPTS_KEY = "QUEUE_MAX_ATTEMPTS"
+_QUEUE_RETRY_BACKOFF_BASE_SECONDS_KEY = "QUEUE_RETRY_BACKOFF_BASE_SECONDS"
+_QUEUE_STALE_AFTER_SECONDS_KEY = "QUEUE_STALE_AFTER_SECONDS"
 
 
 def load_settings(
@@ -100,6 +113,7 @@ def load_settings(
         ),
         channels=_read_channel_seeds(channel_seed_document),
         selected_video_ids=_read_selected_video_ids(channel_seed_document),
+        queue=_read_queue_settings(values),
     )
 
 
@@ -212,3 +226,41 @@ def _read_selected_video_ids(payload: dict[str, object]) -> tuple[str, ...] | No
         video_ids.append(raw_video_id)
 
     return tuple(video_ids)
+
+
+def _read_queue_settings(values: Mapping[str, str]) -> QueueSettings:
+    """기존 로컬 설정을 깨지 않도록 기본값을 두고 큐 정책을 읽는다."""
+
+    defaults = QueueSettings()
+    return QueueSettings(
+        max_attempts=_read_positive_integer(
+            values, _QUEUE_MAX_ATTEMPTS_KEY, defaults.max_attempts
+        ),
+        retry_backoff_base_seconds=_read_positive_integer(
+            values,
+            _QUEUE_RETRY_BACKOFF_BASE_SECONDS_KEY,
+            defaults.retry_backoff_base_seconds,
+        ),
+        stale_after_seconds=_read_positive_integer(
+            values,
+            _QUEUE_STALE_AFTER_SECONDS_KEY,
+            defaults.stale_after_seconds,
+        ),
+    )
+
+
+def _read_positive_integer(
+    values: Mapping[str, str], key: str, default: int
+) -> int:
+    raw_value = values.get(key)
+    if raw_value is None:
+        return default
+
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ConfigurationError(f"{key} must be a positive integer") from error
+
+    if value < 1:
+        raise ConfigurationError(f"{key} must be a positive integer")
+    return value
