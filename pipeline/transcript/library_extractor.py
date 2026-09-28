@@ -24,6 +24,7 @@ class TranscriptFailure(StrEnum):
 
     NO_TRANSCRIPT = "no_transcript"
     ACCESS_RESTRICTED = "access_restricted"
+    PO_TOKEN_REQUIRED = "po_token_required"
     TRANSIENT_ERROR = "transient_error"
     INVALID_RESPONSE = "invalid_response"
 
