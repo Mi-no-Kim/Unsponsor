@@ -51,6 +51,7 @@ _REQUIRED_ENVIRONMENT_KEYS = (
     "MYSQL_PASSWORD",
 )
 _LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2})?$")
+_CHANNEL_ID_PATTERN = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -161,6 +162,11 @@ def _read_channel_seeds(payload: dict[str, object]) -> tuple[ChannelSeed, ...]:
         language_code = raw_channel.get("language_code")
         if not isinstance(channel_id, str) or not channel_id.strip():
             raise ConfigurationError(f"Channel entry {index} requires a channel_id")
+        normalized_channel_id = channel_id.strip()
+        if not _CHANNEL_ID_PATTERN.fullmatch(normalized_channel_id):
+            raise ConfigurationError(
+                f"Channel entry {index} requires a valid YouTube channel ID"
+            )
         if not isinstance(language_code, str) or not _LANGUAGE_CODE_PATTERN.fullmatch(
             language_code
         ):
@@ -168,7 +174,6 @@ def _read_channel_seeds(payload: dict[str, object]) -> tuple[ChannelSeed, ...]:
                 f"Channel entry {index} requires a valid language_code"
             )
 
-        normalized_channel_id = channel_id.strip()
         if normalized_channel_id in channel_ids:
             raise ConfigurationError("channels.local.json must not contain duplicate channel IDs")
         channel_ids.add(normalized_channel_id)

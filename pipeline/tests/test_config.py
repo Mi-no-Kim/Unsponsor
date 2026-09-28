@@ -16,6 +16,8 @@ REQUIRED_ENVIRONMENT_KEYS = (
     "MYSQL_USER",
     "MYSQL_PASSWORD",
 )
+CHANNEL_ID_A = "UC0123456789abcdefghijkl"
+CHANNEL_ID_B = "UCabcdefghijkl0123456789"
 
 
 class LoadSettingsTests(unittest.TestCase):
@@ -45,8 +47,8 @@ class LoadSettingsTests(unittest.TestCase):
         self.write_channels(
             {
                 "channels": [
-                    {"channel_id": "UCexample", "language_code": "ko"},
-                    {"channel_id": "UCexampleTwo", "language_code": "en-US"},
+                    {"channel_id": CHANNEL_ID_A, "language_code": "ko"},
+                    {"channel_id": CHANNEL_ID_B, "language_code": "en-US"},
                 ]
             }
         )
@@ -76,7 +78,7 @@ class LoadSettingsTests(unittest.TestCase):
         video_ids = _video_ids(50)
         self.write_channels(
             {
-                "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
+                "channels": [{"channel_id": CHANNEL_ID_A, "language_code": "ko"}],
                 "selected_video_ids": video_ids,
             }
         )
@@ -93,7 +95,7 @@ class LoadSettingsTests(unittest.TestCase):
                 self.write_channels(
                     {
                         "channels": [
-                            {"channel_id": "UCexample", "language_code": "ko"}
+                            {"channel_id": CHANNEL_ID_A, "language_code": "ko"}
                         ],
                         "selected_video_ids": _video_ids(count),
                     }
@@ -111,7 +113,7 @@ class LoadSettingsTests(unittest.TestCase):
         video_ids[-1] = video_ids[0]
         self.write_channels(
             {
-                "channels": [{"channel_id": "UCexample", "language_code": "ko"}],
+                "channels": [{"channel_id": CHANNEL_ID_A, "language_code": "ko"}],
                 "selected_video_ids": video_ids,
             }
         )
@@ -149,7 +151,7 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertNotIn("super-secret-api-key", str(error.exception))
 
     def test_rejects_channel_without_language_code(self) -> None:
-        self.write_channels({"channels": [{"channel_id": "UCexample"}]})
+        self.write_channels({"channels": [{"channel_id": CHANNEL_ID_A}]})
 
         with self.assertRaisesRegex(ConfigurationError, "Channel entry 1"):
             load_settings(
@@ -160,8 +162,8 @@ class LoadSettingsTests(unittest.TestCase):
         self.write_channels(
             {
                 "channels": [
-                    {"channel_id": "UCprivate", "language_code": "ko"},
-                    {"channel_id": "UCprivate", "language_code": "ko"},
+                    {"channel_id": CHANNEL_ID_A, "language_code": "ko"},
+                    {"channel_id": CHANNEL_ID_A, "language_code": "ko"},
                 ]
             }
         )
@@ -171,7 +173,30 @@ class LoadSettingsTests(unittest.TestCase):
                 self.test_repository_root, self.channel_seed_path, environment={}
             )
 
-        self.assertNotIn("UCprivate", str(error.exception))
+        self.assertNotIn(CHANNEL_ID_A, str(error.exception))
+
+    def test_rejects_malformed_channel_ids_without_echoing_them(self) -> None:
+        for channel_id in (
+            "not-a-youtube-channel",
+            "XX0123456789abcdefghijk",
+            "UC0123456789abcdefghij",
+            "UC0123456789abcdefghijk!",
+        ):
+            with self.subTest(channel_id=channel_id):
+                self.write_channels(
+                    {"channels": [{"channel_id": channel_id, "language_code": "ko"}]}
+                )
+
+                with self.assertRaisesRegex(
+                    ConfigurationError, "valid YouTube channel ID"
+                ) as error:
+                    load_settings(
+                        self.test_repository_root,
+                        self.channel_seed_path,
+                        environment={},
+                    )
+
+                self.assertNotIn(channel_id, str(error.exception))
 
     def test_public_examples_show_the_required_configuration_shape(self) -> None:
         environment_example = (self.repository_root / ".env.example").read_text(
@@ -184,6 +209,9 @@ class LoadSettingsTests(unittest.TestCase):
         for key in REQUIRED_ENVIRONMENT_KEYS:
             self.assertIn(f"{key}=", environment_example)
         self.assertEqual(channels_example["channels"][0]["language_code"], "ko")
+        self.assertRegex(
+            channels_example["channels"][0]["channel_id"], r"^UC[A-Za-z0-9_-]{22}$"
+        )
         self.assertEqual(len(channels_example["selected_video_ids"]), 10)
         self.assertTrue(
             all(
