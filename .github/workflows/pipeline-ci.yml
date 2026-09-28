@@ -1,0 +1,31 @@
+name: Pipeline CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - 'issue/*'
+    paths:
+      - 'pipeline/**'
+      - '.github/workflows/pipeline-ci.yml'
+
+defaults:
+  run:
+    working-directory: pipeline
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: pipeline/uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Run unit tests
+        run: uv run python -m unittest discover -s tests -t .
