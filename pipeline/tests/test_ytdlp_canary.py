@@ -79,6 +79,20 @@ class YtDlpCanaryTests(unittest.TestCase):
         self.assertEqual(report.potoken.code, "provider_unready")
         self.assertEqual(factory.provider_homes, [None])
 
+    def test_rate_limit_stops_the_potoken_request_in_the_same_canary(self) -> None:
+        factory = _ExtractorFactory(
+            TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED),
+            _success("text"),
+        )
+
+        with _provider_home() as provider_home:
+            report = self._canary(provider_home, factory).run("video000001")
+
+        self.assertEqual(report.exit_code, 2)
+        self.assertEqual(report.token_free.code, "rate_limited")
+        self.assertEqual(report.potoken.code, "skipped_rate_limited")
+        self.assertEqual(factory.provider_homes, [None])
+
     def test_classifies_potoken_requirement_without_exposing_failure_detail(self) -> None:
         factory = _ExtractorFactory(
             _success("text"),
