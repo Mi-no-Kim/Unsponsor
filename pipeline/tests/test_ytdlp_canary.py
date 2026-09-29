@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from transcript.library_extractor import TranscriptExtractionResult, TranscriptFailure
+from transcript.model import TranscriptSegment
 from transcript.ytdlp_canary import YtDlpCanary
 
 
@@ -48,8 +49,8 @@ class _ExtractorFactory:
 class YtDlpCanaryTests(unittest.TestCase):
     def test_reports_two_successful_paths_without_transcript_or_video_id(self) -> None:
         factory = _ExtractorFactory(
-            TranscriptExtractionResult.succeeded("one\ntwo"),
-            TranscriptExtractionResult.succeeded("one\ntwo\nthree"),
+            _success("one\ntwo"),
+            _success("one\ntwo\nthree"),
         )
 
         with _provider_home() as provider_home:
@@ -66,8 +67,8 @@ class YtDlpCanaryTests(unittest.TestCase):
 
     def test_reports_provider_unready_without_attempting_potoken_path(self) -> None:
         factory = _ExtractorFactory(
-            TranscriptExtractionResult.succeeded("text"),
-            TranscriptExtractionResult.succeeded("text"),
+            _success("text"),
+            _success("text"),
         )
 
         with TemporaryDirectory() as directory:
@@ -80,7 +81,7 @@ class YtDlpCanaryTests(unittest.TestCase):
 
     def test_classifies_potoken_requirement_without_exposing_failure_detail(self) -> None:
         factory = _ExtractorFactory(
-            TranscriptExtractionResult.succeeded("text"),
+            _success("text"),
             TranscriptExtractionResult.failed(TranscriptFailure.PO_TOKEN_REQUIRED),
         )
 
@@ -94,7 +95,7 @@ class YtDlpCanaryTests(unittest.TestCase):
     def test_reports_invalid_transcript_and_newer_upstream_release(self) -> None:
         factory = _ExtractorFactory(
             TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
-            TranscriptExtractionResult.succeeded("text"),
+            _success("text"),
         )
 
         with _provider_home() as provider_home:
@@ -108,8 +109,8 @@ class YtDlpCanaryTests(unittest.TestCase):
 
     def test_uses_update_exit_code_when_paths_are_healthy(self) -> None:
         factory = _ExtractorFactory(
-            TranscriptExtractionResult.succeeded("text"),
-            TranscriptExtractionResult.succeeded("text"),
+            _success("text"),
+            _success("text"),
         )
 
         with _provider_home() as provider_home:
@@ -122,8 +123,8 @@ class YtDlpCanaryTests(unittest.TestCase):
 
     def test_reports_failed_upstream_check_as_a_safe_error_code(self) -> None:
         factory = _ExtractorFactory(
-            TranscriptExtractionResult.succeeded("text"),
-            TranscriptExtractionResult.succeeded("text"),
+            _success("text"),
+            _success("text"),
         )
 
         with _provider_home() as provider_home:
@@ -140,8 +141,8 @@ class YtDlpCanaryTests(unittest.TestCase):
                 self._canary(
                     provider_home,
                     _ExtractorFactory(
-                        TranscriptExtractionResult.succeeded("text"),
-                        TranscriptExtractionResult.succeeded("text"),
+                        _success("text"),
+                        _success("text"),
                     ),
                 ).run("not-a-video-id")
 
@@ -182,6 +183,20 @@ def _provider_home():
 def _clock():
     values = iter((10.0, 10.125, 20.0, 20.250))
     return lambda: next(values)
+
+
+def _success(text: str) -> TranscriptExtractionResult:
+    return TranscriptExtractionResult.succeeded(
+        tuple(
+            TranscriptSegment(
+                sequence=index,
+                start_ms=index * 1000,
+                end_ms=(index + 1) * 1000,
+                text=line,
+            )
+            for index, line in enumerate(text.splitlines())
+        )
+    )
 
 
 if __name__ == "__main__":

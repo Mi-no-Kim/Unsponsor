@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
+from decimal import Decimal, ROUND_HALF_UP
+import math
 from typing import Protocol
 
+from transcript.model import (
+    TranscriptExtractionResult,
+    TranscriptFailure,
+    TranscriptSegment,
+    normalize_segment_text,
+)
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     AgeRestricted,
@@ -17,43 +23,6 @@ from youtube_transcript_api._errors import (
     YouTubeDataUnparsable,
     YouTubeRequestFailed,
 )
-
-
-class TranscriptFailure(StrEnum):
-    """다음 폴백 단계가 판단할 수 있는 1차 추출 실패 유형이다."""
-
-    NO_TRANSCRIPT = "no_transcript"
-    ACCESS_RESTRICTED = "access_restricted"
-    PO_TOKEN_REQUIRED = "po_token_required"
-    TRANSIENT_ERROR = "transient_error"
-    INVALID_RESPONSE = "invalid_response"
-
-
-@dataclass(frozen=True)
-class TranscriptExtractionResult:
-    """원문 또는 원문을 포함하지 않는 안전한 실패 유형을 담는다."""
-
-    text: str | None
-    failure: TranscriptFailure | None
-
-    def __post_init__(self) -> None:
-        if self.text is None and self.failure is not None:
-            return
-        if isinstance(self.text, str) and self.text and self.failure is None:
-            return
-        raise ValueError("a transcript result must contain either text or a failure")
-
-    @classmethod
-    def succeeded(cls, text: str) -> TranscriptExtractionResult:
-        return cls(text=text, failure=None)
-
-    @classmethod
-    def failed(cls, failure: TranscriptFailure) -> TranscriptExtractionResult:
-        return cls(text=None, failure=failure)
-
-    @property
-    def is_success(self) -> bool:
-        return self.text is not None
 
 
 class TranscriptApi(Protocol):
@@ -105,8 +74,8 @@ class LibraryTranscriptExtractor:
             return TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE)
 
 
-def _normalize_response(response: Iterable[object]) -> str:
-    """자막 조각의 줄바꿈·중복 공백을 정리하면서 순서를 유지한다."""
+def _normalize_response(response: Iterable[object]) -> tuple[TranscriptSegment, ...]:
+    """라이브러리 자막을 시간·순서를 보존한 세그먼트로 정규화한다."""
 
     if isinstance(response, (str, bytes)):
         raise _InvalidTranscriptResponse("transcript response must contain snippets")
@@ -116,19 +85,40 @@ def _normalize_response(response: Iterable[object]) -> str:
     except TypeError as error:
         raise _InvalidTranscriptResponse("transcript response must be iterable") from error
 
-    normalized_snippets: list[str] = []
+    normalized_snippets: list[TranscriptSegment] = []
     try:
         for snippet in snippets:
-            text = getattr(snippet, "text")
-            if not isinstance(text, str):
-                raise _InvalidTranscriptResponse("transcript snippet text must be a string")
-            normalized_text = " ".join(text.split())
-            if normalized_text:
-                normalized_snippets.append(normalized_text)
-    except (AttributeError, TypeError) as error:
+            normalized_text = normalize_segment_text(getattr(snippet, "text"))
+            start_ms = _seconds_to_milliseconds(getattr(snippet, "start"))
+            duration_ms = _seconds_to_milliseconds(getattr(snippet, "duration"))
+            if duration_ms <= 0:
+                raise _InvalidTranscriptResponse(
+                    "transcript snippet duration must be positive"
+                )
+            normalized_snippets.append(
+                TranscriptSegment(
+                    sequence=len(normalized_snippets),
+                    start_ms=start_ms,
+                    end_ms=start_ms + duration_ms,
+                    text=normalized_text,
+                )
+            )
+    except (AttributeError, TypeError, ValueError) as error:
         raise _InvalidTranscriptResponse("transcript response has an invalid snippet") from error
 
     if not normalized_snippets:
         raise _InvalidTranscriptResponse("transcript response contains no text")
 
-    return "\n".join(normalized_snippets)
+    return tuple(normalized_snippets)
+
+
+def _seconds_to_milliseconds(value: object) -> int:
+    """라이브러리의 초 단위 숫자를 반올림 규칙이 고정된 밀리초로 바꾼다."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _InvalidTranscriptResponse("transcript timestamp must be numeric")
+    if not math.isfinite(value) or value < 0:
+        raise _InvalidTranscriptResponse("transcript timestamp must be non-negative")
+    return int(
+        (Decimal(str(value)) * 1000).to_integral_value(rounding=ROUND_HALF_UP)
+    )

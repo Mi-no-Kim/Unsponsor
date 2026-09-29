@@ -6,6 +6,7 @@ from pathlib import Path
 import unittest
 
 from transcript.library_extractor import TranscriptExtractionResult, TranscriptFailure
+from transcript.model import TranscriptSegment
 from transcript.ytdlp_extractor import (
     ProviderUnavailable,
     YtDlpTranscriptExtractor,
@@ -34,8 +35,16 @@ class _Downloader(AbstractContextManager["_Downloader"]):
                 json.dumps(
                     {
                         "events": [
-                            {"segs": [{"utf8": " First\nfragment "}]},
-                            {"segs": [{"utf8": " second   fragment "}]},
+                            {
+                                "tStartMs": 1250,
+                                "dDurationMs": 500,
+                                "segs": [{"utf8": " First\nfragment "}],
+                            },
+                            {
+                                "tStartMs": 2000,
+                                "dDurationMs": 375,
+                                "segs": [{"utf8": " second   fragment "}],
+                            },
                         ]
                     }
                 ),
@@ -45,6 +54,12 @@ class _Downloader(AbstractContextManager["_Downloader"]):
             directory = Path(self.options["paths"]["home"])
             (directory / "video000001.ko.json3").write_text(
                 "not json", encoding="utf-8"
+            )
+        if self.action == "write_json3_without_timestamps":
+            directory = Path(self.options["paths"]["home"])
+            (directory / "video000001.ko.json3").write_text(
+                json.dumps({"events": [{"segs": [{"utf8": "private transcript"}]}]}),
+                encoding="utf-8",
             )
         return 0
 
@@ -89,7 +104,12 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            TranscriptExtractionResult.succeeded("First fragment\nsecond fragment"),
+            TranscriptExtractionResult.succeeded(
+                (
+                    TranscriptSegment(0, 1250, 1750, "First fragment"),
+                    TranscriptSegment(1, 2000, 2375, "second fragment"),
+                )
+            ),
         )
         self.assertEqual(len(downloader_factory.downloaders), 1)
         options = downloader_factory.downloaders[0].options
@@ -157,3 +177,16 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
         )
         self.assertNotIn("not json", repr(result))
+
+    def test_extract_rejects_json3_text_without_timestamps(self) -> None:
+        downloader_factory = _DownloaderFactory("write_json3_without_timestamps")
+
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=downloader_factory
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
+        )
+        self.assertNotIn("private transcript", repr(result))

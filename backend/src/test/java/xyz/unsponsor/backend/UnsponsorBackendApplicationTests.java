@@ -40,7 +40,8 @@ class UnsponsorBackendApplicationTests {
 			"product_aspect_stats",
 			"aspect_candidates",
 			"aspect_candidate_evidence");
-	private static final Set<String> SCHEMA_TABLES = Stream.of(V1_TABLES, V2_TABLES, V3_TABLES)
+	private static final Set<String> V4_TABLES = Set.of("video_transcript_segments");
+	private static final Set<String> SCHEMA_TABLES = Stream.of(V1_TABLES, V2_TABLES, V3_TABLES, V4_TABLES)
 			.flatMap(Set::stream)
 			.collect(Collectors.toUnmodifiableSet());
 
@@ -57,7 +58,7 @@ class UnsponsorBackendApplicationTests {
 				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("1", "2", "3"), appliedVersions);
+		assertEquals(List.of("1", "2", "3", "4"), appliedVersions);
 	}
 
 	@Test
@@ -123,6 +124,36 @@ class UnsponsorBackendApplicationTests {
 				String.class);
 
 		assertEquals(V3_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void createsV4TranscriptSegmentTable() {
+		List<String> tableNames = jdbcTemplate.queryForList(
+				"""
+				SELECT table_name
+				FROM information_schema.tables
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcript_segments'
+				""",
+				String.class);
+
+		assertEquals(V4_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void givesTranscriptSegmentsTheirTimelineColumns() {
+		List<String> columnNames = jdbcTemplate.queryForList(
+				"""
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcript_segments'
+				""",
+				String.class);
+
+		assertEquals(
+				Set.of("id", "video_id", "sequence", "start_ms", "end_ms", "text", "created_at"),
+				new HashSet<>(columnNames));
 	}
 
 	@Test
