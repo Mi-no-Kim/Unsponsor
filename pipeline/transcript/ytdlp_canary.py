@@ -112,7 +112,7 @@ class CanaryReport:
 
 
 class YtDlpCanary:
-    """두 자막 경로와 업스트림 버전을 독립적으로 확인한다."""
+    """두 자막 경로와 업스트림 버전을 안전한 요청 순서로 확인한다."""
 
     def __init__(
         self,
@@ -165,6 +165,7 @@ class YtDlpCanary:
             video_id,
             language_codes,
             environment_code=environment_code,
+            token_free=token_free,
         )
         upstream_code, upstream_latest_version = self._check_upstream(versions)
         return CanaryReport(
@@ -209,7 +210,10 @@ class YtDlpCanary:
         language_codes: Sequence[str],
         *,
         environment_code: str,
+        token_free: CanaryCheck,
     ) -> CanaryCheck:
+        if token_free.code == "rate_limited":
+            return CanaryCheck("skipped_rate_limited", duration_ms=0, text_length=None)
         if environment_code != "ok":
             return CanaryCheck(environment_code, duration_ms=0, text_length=None)
         return self._run_extraction(
@@ -377,12 +381,16 @@ def _major_versions_match(left: str | None, right: str | None) -> bool:
 
 
 def _token_free_failure_code(failure: TranscriptFailure | None) -> str:
+    if failure is TranscriptFailure.RATE_LIMITED:
+        return "rate_limited"
     if failure is TranscriptFailure.INVALID_RESPONSE:
         return "invalid_transcript"
     return "subtitle_download_failed"
 
 
 def _potoken_failure_code(failure: TranscriptFailure | None) -> str:
+    if failure is TranscriptFailure.RATE_LIMITED:
+        return "rate_limited"
     if failure is TranscriptFailure.INVALID_RESPONSE:
         return "invalid_transcript"
     if failure is TranscriptFailure.PO_TOKEN_REQUIRED:

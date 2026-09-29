@@ -21,6 +21,8 @@ from yt_dlp.utils import DownloadError
 
 _DEFAULT_LANGUAGE_CODES = ("ko", "en")
 _YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
+_REQUEST_SLEEP_SECONDS = 2.0
+_SUBTITLE_SLEEP_SECONDS = 35.0
 
 
 class _YtDlp(Protocol):
@@ -164,7 +166,10 @@ class YtDlpTranscriptExtractor:
         )
         if primary_result.is_success:
             return primary_result
-        if primary_result.failure is TranscriptFailure.INVALID_RESPONSE:
+        if primary_result.failure in {
+            TranscriptFailure.INVALID_RESPONSE,
+            TranscriptFailure.RATE_LIMITED,
+        }:
             return primary_result
 
         if self._provider_session_factory is None:
@@ -214,6 +219,7 @@ class YtDlpTranscriptExtractor:
         if fallback_result.failure in {
             TranscriptFailure.NO_TRANSCRIPT,
             TranscriptFailure.INVALID_RESPONSE,
+            TranscriptFailure.RATE_LIMITED,
         }:
             return fallback_result
         return TranscriptExtractionResult.failed(TranscriptFailure.PO_TOKEN_REQUIRED)
@@ -258,10 +264,10 @@ class YtDlpTranscriptExtractor:
                     exit_code = downloader.download(
                         [_YOUTUBE_WATCH_URL.format(video_id=video_id)]
                     )
-            except DownloadError:
-                return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
-            except Exception:
-                return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
+            except DownloadError as error:
+                return TranscriptExtractionResult.failed(_download_failure(error))
+            except Exception as error:
+                return TranscriptExtractionResult.failed(_download_failure(error))
 
             if exit_code != 0:
                 return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
@@ -287,7 +293,7 @@ def _yt_dlp_options(
     node_executable: str | Path,
     provider_base_url: str | None,
 ) -> dict[str, object]:
-    """미디어 없이 자동 자막 JSON3만 기록하도록 yt-dlp 옵션을 만든다."""
+    """수동·원본 자동 자막만 느리고 제한된 요청으로 JSON3에 기록한다."""
 
     options: dict[str, object] = {
         "skip_download": True,
@@ -296,19 +302,71 @@ def _yt_dlp_options(
         "writeautomaticsub": True,
         "subtitleslangs": [language_code],
         "subtitlesformat": "json3",
+        "retries": 0,
+        "extractor_retries": 0,
+        "fragment_retries": 0,
+        "sleep_interval_requests": _REQUEST_SLEEP_SECONDS,
+        "sleep_interval_subtitles": _SUBTITLE_SLEEP_SECONDS,
         "paths": {"home": str(output_directory)},
         "outtmpl": {"default": "%(id)s.%(ext)s"},
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
         "js_runtimes": {"node": {"path": str(node_executable)}},
+        "extractor_args": {"youtube": {"skip": ["translated_subs"]}},
     }
     if provider_base_url is not None:
         options["extractor_args"] = {
-            "youtube": {"player_client": ["web"]},
+            "youtube": {
+                "skip": ["translated_subs"],
+                "player_client": ["web"],
+            },
             "youtubepot-bgutilhttp": {"base_url": [provider_base_url]},
         }
     return options
+
+
+def _download_failure(error: BaseException) -> TranscriptFailure:
+    """429만 안전한 재시도 대기 상태로 보존하고 세부 오류는 버린다."""
+
+    if _has_http_status(error, 429):
+        return TranscriptFailure.RATE_LIMITED
+    return TranscriptFailure.TRANSIENT_ERROR
+
+
+def _has_http_status(error: BaseException, expected_status: int) -> bool:
+    """yt-dlp의 래핑 예외와 원래 HTTP 예외에서 상태 코드만 읽는다."""
+
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        for attribute in ("status", "code"):
+            status = getattr(current, attribute, None)
+            if isinstance(status, int) and not isinstance(status, bool):
+                if status == expected_status:
+                    return True
+
+        exc_info = getattr(current, "exc_info", None)
+        if (
+            isinstance(exc_info, tuple)
+            and len(exc_info) >= 2
+            and isinstance(exc_info[1], BaseException)
+        ):
+            pending.append(exc_info[1])
+        for chained in (current.__cause__, current.__context__):
+            if isinstance(chained, BaseException):
+                pending.append(chained)
+
+    # 일부 yt-dlp DownloadError는 원래 HTTP 예외를 보존하지 않는다. 이 경우에도
+    # 오류 문자열을 반환·기록하지 않고 상태 숫자만 즉시 판별한다.
+    return isinstance(error, DownloadError) and f"HTTP Error {expected_status}" in str(
+        error
+    )
 
 
 def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:

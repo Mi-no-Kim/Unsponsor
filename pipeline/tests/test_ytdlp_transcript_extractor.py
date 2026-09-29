@@ -4,6 +4,7 @@ import json
 from contextlib import AbstractContextManager
 from pathlib import Path
 import unittest
+from urllib.error import HTTPError
 
 from transcript.library_extractor import TranscriptExtractionResult, TranscriptFailure
 from transcript.model import TranscriptSegment
@@ -27,6 +28,16 @@ class _Downloader(AbstractContextManager["_Downloader"]):
         self.urls.append(url_list)
         if self.action == "download_error":
             raise DownloadError("private transcript contents")
+        if self.action == "wrapped_429":
+            cause = HTTPError("https://private.example", 429, "private", {}, None)
+            cause.close()
+            raise DownloadError("private transcript contents", (HTTPError, cause, None))
+        if self.action == "message_429":
+            raise DownloadError("private request failed: HTTP Error 429")
+        if self.action == "direct_429":
+            error = HTTPError("https://private.example", 429, "private", {}, None)
+            error.close()
+            raise error
         if self.action == "nonzero":
             return 1
         if self.action == "write_json3":
@@ -113,7 +124,14 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
         )
         self.assertEqual(len(downloader_factory.downloaders), 1)
         options = downloader_factory.downloaders[0].options
-        self.assertNotIn("extractor_args", options)
+        self.assertEqual(
+            options["extractor_args"], {"youtube": {"skip": ["translated_subs"]}}
+        )
+        self.assertEqual(options["retries"], 0)
+        self.assertEqual(options["extractor_retries"], 0)
+        self.assertEqual(options["fragment_retries"], 0)
+        self.assertEqual(options["sleep_interval_requests"], 2.0)
+        self.assertEqual(options["sleep_interval_subtitles"], 35.0)
         self.assertFalse(Path(options["paths"]["home"]).exists())
 
     def test_extract_retries_through_loopback_provider_after_token_free_failure(self) -> None:
@@ -130,10 +148,58 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
         self.assertEqual(
             fallback_options["extractor_args"],
             {
-                "youtube": {"player_client": ["web"]},
+                "youtube": {
+                    "skip": ["translated_subs"],
+                    "player_client": ["web"],
+                },
                 "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:49000"]},
             },
         )
+
+    def test_extract_preserves_wrapped_429_without_starting_provider(self) -> None:
+        downloader_factory = _DownloaderFactory("wrapped_429", "write_json3")
+        provider_starts: list[None] = []
+
+        def provider_factory() -> _ProviderSession:
+            provider_starts.append(None)
+            return _ProviderSession()
+
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=downloader_factory,
+            provider_session_factory=provider_factory,
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED),
+        )
+        self.assertEqual(len(downloader_factory.downloaders), 1)
+        self.assertEqual(provider_starts, [])
+        self.assertNotIn("private", repr(result))
+
+    def test_extract_preserves_direct_429_without_trying_next_language(self) -> None:
+        downloader_factory = _DownloaderFactory("direct_429", "write_json3")
+
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=downloader_factory
+        ).extract_token_free("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED),
+        )
+        self.assertEqual(len(downloader_factory.downloaders), 1)
+
+    def test_extract_preserves_429_when_ytdlp_loses_the_original_exception(self) -> None:
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=_DownloaderFactory("message_429")
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED),
+        )
+        self.assertNotIn("private", repr(result))
 
     def test_extract_reports_po_token_requirement_when_no_provider_is_configured(self) -> None:
         result = YtDlpTranscriptExtractor(
