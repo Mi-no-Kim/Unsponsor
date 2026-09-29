@@ -34,3 +34,40 @@ extractor = YtDlpTranscriptExtractor(
 ```
 
 Provider 원본과 Python 플러그인은 같은 주 버전으로 함께 갱신한다.
+
+## W-022: 일일 yt-dlp·PoToken canary
+
+`transcript.ytdlp_canary`는 두 경로를 **서로 독립적으로** 검사한다.
+
+1. 일반 `yt-dlp` 자동 자막 경로
+2. `web` 클라이언트와 작업 수명에 한정된 bgutil Provider를 쓰는 PoToken 경로
+
+공개 검사 영상 ID는 호출 시에만 전달한다. 코드·출력 JSON·로그에는 영상 ID, 자막 원문,
+PoToken, 자막 URL 쿼리를 쓰지 않는다. 결과에는 안전한 오류 코드, 각 경로의 소요 시간과
+자막 글자 수, 잠긴/설치된 버전만 포함한다.
+
+```powershell
+$uv = 'C:\Users\aspom\AppData\Roaming\Python\Python314\Scripts\uv.exe'
+$canaryVideoId = '<공개 검사 영상 ID 11자>'
+
+# 최초 한 번 또는 lock 변경 뒤에 실행한다.
+& $uv sync --locked
+
+& .\.venv\Scripts\python.exe -m transcript.ytdlp_canary `
+  --video-id $canaryVideoId `
+  --provider-home C:\tools\bgutil-ytdlp-pot-provider\server
+```
+
+`uv sync --locked`로 `uv.lock`과 일치시킨 `.venv`의 Python을 직접 실행해야 아래 종료
+코드가 스케줄러까지 보존된다. `uv run`은 자식 명령의 비영(0) 종료 코드를 모두 `1`로
+바꾸므로, 일일 스케줄러 명령으로 쓰지 않는다. 종료 코드는 다음과 같다.
+
+| 코드 | 의미                                                       | 조치                                               |
+| ---- | ---------------------------------------------------------- | -------------------------------------------------- |
+| `0`  | 두 자막 경로와 upstream 버전 조회가 정상                   | 조치 없음                                          |
+| `2`  | Provider 준비·의존성 일치·자막 추출·upstream 조회 중 실패  | JSON의 안전한 오류 코드를 보고 재현·원인을 확인    |
+| `3`  | 자막 경로는 정상이지만 공식 yt-dlp 안정 릴리스가 더 새로움 | 호환성 검증 Work를 열고, 자동 업데이트는 하지 않음 |
+
+일일 스케줄러는 이 명령의 JSON 한 줄과 종료 코드만 수집하고, `0`이면 알리지 않는다. `2`나
+`3`일 때만 Codex가 원인 후보와 다음 조치를 정리한다. 스케줄러를 AWS에 배포하는 작업은 이
+Work 범위가 아니며, 별도 인프라 승인 후 결정한다.

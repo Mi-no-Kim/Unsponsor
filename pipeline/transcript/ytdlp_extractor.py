@@ -159,10 +159,8 @@ class YtDlpTranscriptExtractor:
     ) -> TranscriptExtractionResult:
         """토큰 불필요 경로를 먼저 시도하고 필요할 때만 Provider를 실행한다."""
 
-        primary_result = self._extract_with_languages(
-            video_id,
-            language_codes=language_codes,
-            provider_base_url=None,
+        primary_result = self.extract_token_free(
+            video_id, language_codes=language_codes
         )
         if primary_result.is_success:
             return primary_result
@@ -172,6 +170,33 @@ class YtDlpTranscriptExtractor:
         if self._provider_session_factory is None:
             if primary_result.failure is TranscriptFailure.NO_TRANSCRIPT:
                 return primary_result
+            return TranscriptExtractionResult.failed(TranscriptFailure.PO_TOKEN_REQUIRED)
+
+        return self.extract_with_provider(video_id, language_codes=language_codes)
+
+    def extract_token_free(
+        self,
+        video_id: str,
+        *,
+        language_codes: Sequence[str] = _DEFAULT_LANGUAGE_CODES,
+    ) -> TranscriptExtractionResult:
+        """PoToken 없이 자동 자막을 한 번 추출한다."""
+
+        return self._extract_with_languages(
+            video_id,
+            language_codes=language_codes,
+            provider_base_url=None,
+        )
+
+    def extract_with_provider(
+        self,
+        video_id: str,
+        *,
+        language_codes: Sequence[str] = _DEFAULT_LANGUAGE_CODES,
+    ) -> TranscriptExtractionResult:
+        """loopback Provider를 사용한 web/PoToken 자막 경로를 한 번 추출한다."""
+
+        if self._provider_session_factory is None:
             return TranscriptExtractionResult.failed(TranscriptFailure.PO_TOKEN_REQUIRED)
 
         try:
