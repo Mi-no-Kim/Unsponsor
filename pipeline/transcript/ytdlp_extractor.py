@@ -14,7 +14,7 @@ from typing import ContextManager, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from transcript.library_extractor import TranscriptExtractionResult, TranscriptFailure
+from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSegment
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
@@ -311,14 +311,14 @@ def _yt_dlp_options(
     return options
 
 
-def _normalize_json3(path: Path) -> str:
-    """자막 JSON3의 이벤트 텍스트를 순서대로 합쳐 원문으로 정규화한다."""
+def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:
+    """자막 JSON3 이벤트를 시간·순서를 보존한 세그먼트로 정규화한다."""
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
         raise ValueError("JSON3 subtitle payload has no events")
 
-    normalized_events: list[str] = []
+    normalized_events: list[TranscriptSegment] = []
     for event in payload["events"]:
         if not isinstance(event, dict):
             raise ValueError("JSON3 subtitle event is invalid")
@@ -334,12 +334,30 @@ def _normalize_json3(path: Path) -> str:
                 raise ValueError("JSON3 subtitle segment has no text")
             parts.append(segment["utf8"])
         normalized_text = " ".join("".join(parts).split())
-        if normalized_text:
-            normalized_events.append(normalized_text)
+        if not normalized_text:
+            continue
+        start_ms = _json3_milliseconds(event.get("tStartMs"))
+        duration_ms = _json3_milliseconds(event.get("dDurationMs"))
+        if duration_ms <= 0:
+            raise ValueError("JSON3 subtitle event duration must be positive")
+        normalized_events.append(
+            TranscriptSegment(
+                sequence=len(normalized_events),
+                start_ms=start_ms,
+                end_ms=start_ms + duration_ms,
+                text=normalized_text,
+            )
+        )
 
     if not normalized_events:
         raise ValueError("JSON3 subtitle payload contains no text")
-    return "\n".join(normalized_events)
+    return tuple(normalized_events)
+
+
+def _json3_milliseconds(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("JSON3 subtitle timestamp must be a non-negative integer")
+    return value
 
 
 def _reserve_loopback_port() -> int:

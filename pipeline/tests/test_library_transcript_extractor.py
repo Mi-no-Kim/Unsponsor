@@ -8,12 +8,15 @@ from transcript.library_extractor import (
     TranscriptExtractionResult,
     TranscriptFailure,
 )
+from transcript.model import TranscriptSegment
 from youtube_transcript_api._errors import RequestBlocked, TranscriptsDisabled
 
 
 @dataclass(frozen=True)
 class _Snippet:
     text: str
+    start: float
+    duration: float
 
 
 class _TranscriptApiStub:
@@ -32,15 +35,24 @@ class _TranscriptApiStub:
 class LibraryTranscriptExtractorTests(unittest.TestCase):
     def test_extract_normalizes_non_empty_snippets_in_their_original_order(self) -> None:
         api = _TranscriptApiStub(
-            response=(_Snippet(" First\nfragment "), _Snippet(" second   fragment "))
+            response=(
+                _Snippet(" First\nfragment ", 1.25, 0.5),
+                _Snippet(" second   fragment ", 2.0, 0.375),
+            )
         )
 
         result = LibraryTranscriptExtractor(api).extract("video000001")
 
         self.assertEqual(
             result,
-            TranscriptExtractionResult.succeeded("First fragment\nsecond fragment"),
+            TranscriptExtractionResult.succeeded(
+                (
+                    TranscriptSegment(0, 1250, 1750, "First fragment"),
+                    TranscriptSegment(1, 2000, 2375, "second fragment"),
+                )
+            ),
         )
+        self.assertEqual(result.text, "First fragment\nsecond fragment")
         self.assertEqual(api.calls, [("video000001", ["ko", "en"])])
 
     def test_extract_reports_disabled_captions_as_no_transcript(self) -> None:
@@ -77,7 +89,7 @@ class LibraryTranscriptExtractorTests(unittest.TestCase):
         self.assertNotIn("private transcript contents", repr(result))
 
     def test_extract_rejects_an_empty_or_malformed_response_without_exposing_it(self) -> None:
-        for response in ((), (_Snippet("  \n  "),), object()):
+        for response in ((), (_Snippet("  \n  ", 0.0, 1.0),), object()):
             with self.subTest(response_type=type(response).__name__):
                 result = LibraryTranscriptExtractor(_TranscriptApiStub(response)).extract(
                     "video000001"
@@ -87,4 +99,16 @@ class LibraryTranscriptExtractorTests(unittest.TestCase):
                     result,
                     TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
                 )
-                self.assertNotIn(repr(response), repr(result))
+                if response != ():
+                    self.assertNotIn(repr(response), repr(result))
+
+    def test_extract_rejects_a_segment_without_a_valid_timestamp(self) -> None:
+        result = LibraryTranscriptExtractor(
+            _TranscriptApiStub(response=(_Snippet("private transcript", -1.0, 1.0),))
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
+        )
+        self.assertNotIn("private transcript", repr(result))
