@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, redirect_stderr
+from io import StringIO
 from pathlib import Path
 import unittest
 from urllib.error import HTTPError
@@ -38,6 +39,9 @@ class _Downloader(AbstractContextManager["_Downloader"]):
             error = HTTPError("https://private.example", 429, "private", {}, None)
             error.close()
             raise error
+        if self.action == "write_error_to_logger":
+            self.options["logger"].error("video000001 private upstream error")
+            return 1
         if self.action == "nonzero":
             return 1
         if self.action == "write_json3":
@@ -256,3 +260,17 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
         )
         self.assertNotIn("private transcript", repr(result))
+
+    def test_extract_silences_ytdlp_error_output_that_can_contain_sensitive_values(self) -> None:
+        output = StringIO()
+
+        with redirect_stderr(output):
+            result = YtDlpTranscriptExtractor(
+                ytdlp_factory=_DownloaderFactory("write_error_to_logger")
+            ).extract_token_free("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
+        )
+        self.assertEqual(output.getvalue(), "")

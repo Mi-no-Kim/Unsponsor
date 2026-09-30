@@ -5,6 +5,7 @@
 ## 공통 규칙
 
 - 문자셋: utf8mb4 (다국어 제목·설명·이모지 대응)
+- 시간: 시점을 나타내는 `DATETIME` 값은 UTC로 저장한다. API·관리자 화면 등 사람에게 시각을 표시하는 경계에서만 `Asia/Seoul`(KST)로 변환하며, DB 서버 시간대나 저장값 자체를 표시 목적에 맞춰 바꾸지 않는다 (D-052).
 - PK: 각 테이블 `id` BIGINT AUTO_INCREMENT. 외부 시스템 ID(YouTube 등)는 별도 UNIQUE 컬럼으로 보관.
 - `created_at`/`updated_at`은 테이블 성격에 따라 둔다: 행이 수정되는 테이블은 둘 다, 추가만 되고 수정되지 않는 테이블(로그·증거 등)은 `created_at`만, 정적 룩업 테이블(`languages`)과 N:M 연결 테이블(`point_aspects`)은 두지 않는다.
 - 고정된 값 집합이 필요한 컬럼은 그 컬럼에 쓰는 주체에 따라 정한다 (D-035). Spring만 쓰면 VARCHAR + Java enum으로 앱에서 강제한다. Python 파이프라인도 쓰면 DB가 값을 강제한다 — 값 목록이 고정이거나 드물게만 늘면 네이티브 ENUM(D-019), 계속 늘어날 수 있으면 룩업 테이블 + FK(예: language, D-021).

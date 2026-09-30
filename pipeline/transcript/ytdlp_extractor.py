@@ -52,6 +52,19 @@ YtDlpFactory = Callable[[Mapping[str, object]], ContextManager[_YtDlp]]
 ProviderSessionFactory = Callable[[], ContextManager[_ProviderSession]]
 
 
+class _SilentYtDlpLogger:
+    """yt-dlp가 기본 stderr에 쓰는 영상 식별자·외부 오류 원문을 차단한다."""
+
+    def debug(self, message: str) -> None:
+        del message
+
+    def warning(self, message: str) -> None:
+        del message
+
+    def error(self, message: str) -> None:
+        del message
+
+
 class ProviderUnavailable(RuntimeError):
     """PoToken Provider를 안전하게 시작·준비할 수 없음을 나타낸다."""
 
@@ -312,6 +325,7 @@ def _yt_dlp_options(
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "logger": _SilentYtDlpLogger(),
         "js_runtimes": {"node": {"path": str(node_executable)}},
         "extractor_args": {"youtube": {"skip": ["translated_subs"]}},
     }

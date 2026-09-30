@@ -18,6 +18,13 @@ class TranscriptFailure(StrEnum):
     INVALID_RESPONSE = "invalid_response"
 
 
+class TranscriptSource(StrEnum):
+    """성공한 자막을 확보한 PH-1 경로다."""
+
+    LIBRARY = "library"
+    YT_DLP = "yt_dlp"
+
+
 def normalize_segment_text(text: str) -> str:
     """외부 자막 조각을 한 줄의 안전한 원문 표현으로 정규화한다."""
 
