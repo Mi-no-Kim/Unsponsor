@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from decimal import Decimal, ROUND_HALF_UP
+import logging
 import math
 from typing import Protocol
 
+from common.restricted_error_log import transcript_error_logger
 from transcript.model import (
     TranscriptExtractionResult,
     TranscriptFailure,
@@ -42,8 +44,16 @@ _DEFAULT_LANGUAGE_CODES = ("ko", "en")
 class LibraryTranscriptExtractor:
     """youtube-transcript-api를 PH-1 자막 확보 흐름에 맞춰 감싼다."""
 
-    def __init__(self, api: TranscriptApi | None = None) -> None:
+    def __init__(
+        self,
+        api: TranscriptApi | None = None,
+        *,
+        error_logger: logging.Logger | None = None,
+    ) -> None:
         self._api = api if api is not None else YouTubeTranscriptApi()
+        self._error_logger = (
+            error_logger if error_logger is not None else transcript_error_logger()
+        )
 
     def extract(
         self,
@@ -58,19 +68,37 @@ class LibraryTranscriptExtractor:
         except (NoTranscriptFound, TranscriptsDisabled):
             return TranscriptExtractionResult.failed(TranscriptFailure.NO_TRANSCRIPT)
         except YouTubeDataUnparsable:
+            self._error_logger.exception(
+                "youtube-transcript-api returned unparsable data; video_id=%s",
+                video_id,
+            )
             return TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE)
         except YouTubeRequestFailed:
+            self._error_logger.exception(
+                "youtube-transcript-api request failed; video_id=%s", video_id
+            )
             return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
         except (AgeRestricted, RequestBlocked, CouldNotRetrieveTranscript):
+            self._error_logger.exception(
+                "youtube-transcript-api access was restricted; video_id=%s", video_id
+            )
             return TranscriptExtractionResult.failed(
                 TranscriptFailure.ACCESS_RESTRICTED
             )
         except Exception:
+            self._error_logger.exception(
+                "youtube-transcript-api raised an unexpected error; video_id=%s",
+                video_id,
+            )
             return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
 
         try:
             return TranscriptExtractionResult.succeeded(_normalize_response(response))
         except _InvalidTranscriptResponse:
+            self._error_logger.exception(
+                "youtube-transcript-api returned an invalid transcript; video_id=%s",
+                video_id,
+            )
             return TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE)
 
 

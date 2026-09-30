@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
@@ -14,6 +16,7 @@ from collector.processing_queue_worker import (
     QueueFailure,
 )
 from common.config import PipelineSettings, load_settings
+from common.restricted_error_log import configure_restricted_error_log
 from common.mysql import MySqlConnectionFactory
 from transcript.library_extractor import LibraryTranscriptExtractor
 from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSource
@@ -142,11 +145,13 @@ class TranscriptStageRunner:
         persistence: TranscriptPersistence,
         library_extractor: TranscriptExtractor,
         ytdlp_extractor: TranscriptExtractor,
+        error_logger: logging.Logger | None = None,
     ) -> None:
         self._queue = queue
         self._persistence = persistence
         self._library_extractor = library_extractor
         self._ytdlp_extractor = ytdlp_extractor
+        self._error_logger = error_logger
 
     def run(self) -> TranscriptStageRunResult:
         """멈춘 작업을 먼저 복구하고, 현재 실행 가능한 작업을 모두 처리한다."""
@@ -167,6 +172,7 @@ class TranscriptStageRunner:
         try:
             youtube_video_id = self._persistence.find_youtube_video_id(job.video_id)
         except Exception:
+            self._log_exception("could not read queued video's YouTube ID")
             return (
                 self._record_failure(result, job, TranscriptFailure.TRANSIENT_ERROR),
                 False,
@@ -188,11 +194,16 @@ class TranscriptStageRunner:
             self._persistence.replace_success(job.video_id, source, extraction_result)
             self._queue.complete_transcript(job)
         except Exception:
+            self._log_exception("could not persist a successful transcript")
             return (
                 self._record_failure(result, job, TranscriptFailure.TRANSIENT_ERROR),
                 False,
             )
         return result.with_success(source), False
+
+    def _log_exception(self, message: str) -> None:
+        if self._error_logger is not None:
+            self._error_logger.exception(message)
 
     def _extract(
         self, youtube_video_id: str
@@ -200,6 +211,7 @@ class TranscriptStageRunner:
         try:
             library_result = self._library_extractor.extract(youtube_video_id)
         except Exception:
+            self._log_exception("library transcript extractor raised an unexpected error")
             library_result = TranscriptExtractionResult.failed(
                 TranscriptFailure.TRANSIENT_ERROR
             )
@@ -211,6 +223,7 @@ class TranscriptStageRunner:
         try:
             ytdlp_result = self._ytdlp_extractor.extract(youtube_video_id)
         except Exception:
+            self._log_exception("yt-dlp transcript extractor raised an unexpected error")
             ytdlp_result = TranscriptExtractionResult.failed(
                 TranscriptFailure.TRANSIENT_ERROR
             )
@@ -233,6 +246,8 @@ def run_transcript_stage(
     settings: PipelineSettings,
     *,
     provider_home: Path | None = None,
+    cookie_file: Path | None = None,
+    error_logger: logging.Logger | None = None,
 ) -> TranscriptStageRunResult:
     """설정된 로컬 DB에서 transcript 단계 실행기를 구성해 실행한다."""
 
@@ -240,8 +255,13 @@ def run_transcript_stage(
     return TranscriptStageRunner(
         ProcessingQueueWorker(connection_factory, settings.queue),
         TranscriptStore(connection_factory),
-        LibraryTranscriptExtractor(),
-        YtDlpTranscriptExtractor(provider_home=provider_home),
+        LibraryTranscriptExtractor(error_logger=error_logger),
+        YtDlpTranscriptExtractor(
+            provider_home=provider_home,
+            cookie_file=cookie_file,
+            error_logger=error_logger,
+        ),
+        error_logger=error_logger,
     ).run()
 
 
@@ -257,6 +277,13 @@ def _print_summary(result: TranscriptStageRunResult) -> None:
     )
 
 
+def _default_error_log_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "Unsponsor" / "logs" / "transcript-errors.log"
+    return Path.cwd() / ".unsponsor" / "logs" / "transcript-errors.log"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """비공개 로컬 설정으로 큐의 transcript 단계를 실행한다."""
 
@@ -266,11 +293,34 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=Path,
         help="필요할 때만 시작할 bgutil Provider의 빌드 디렉터리",
     )
+    parser.add_argument(
+        "--cookie-file",
+        type=Path,
+        help="yt-dlp에만 전달할 Netscape 형식 YouTube 쿠키 파일",
+    )
+    parser.add_argument(
+        "--error-log",
+        type=Path,
+        default=_default_error_log_path(),
+        help="상세 외부 오류를 기록할 로컬 전용 파일",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.cookie_file is not None and not arguments.cookie_file.is_file():
+        parser.error("--cookie-file must name an existing file")
 
     pipeline_root = Path(__file__).resolve().parents[1]
     settings = load_settings(pipeline_root.parent, pipeline_root / "channels.local.json")
-    _print_summary(run_transcript_stage(settings, provider_home=arguments.provider_home))
+    error_logger = configure_restricted_error_log(
+        arguments.error_log, cookie_file=arguments.cookie_file
+    )
+    _print_summary(
+        run_transcript_stage(
+            settings,
+            provider_home=arguments.provider_home,
+            cookie_file=arguments.cookie_file,
+            error_logger=error_logger,
+        )
+    )
 
 
 if __name__ == "__main__":
