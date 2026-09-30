@@ -118,13 +118,13 @@
 
 ### video_transcripts
 
-| 컬럼       | 타입                        | 설명                                                                      |
-| ---------- | --------------------------- | ------------------------------------------------------------------------- |
-| video_id   | BIGINT PK, FK → videos.id   | 영상 1개당 자막 1건 (1:1)                                                 |
-| raw_text   | LONGTEXT                    | 자막 원문(STT 결과 포함). 화면에 노출하지 않음 (D-018)                    |
-| source     | ENUM('library','bs4','stt') | 확보 경로 (D-015). Selenium 폴백이 추가되면 ALTER로 값을 추가한다 (D-035) |
-| created_at | DATETIME                    |                                                                           |
-| updated_at | DATETIME                    |                                                                           |
+| 컬럼       | 타입                      | 설명                                                                   |
+| ---------- | ------------------------- | ---------------------------------------------------------------------- |
+| video_id   | BIGINT PK, FK → videos.id | 영상 1개당 자막 1건 (1:1)                                              |
+| raw_text   | LONGTEXT                  | 확보한 자막 원문. 화면에 노출하지 않음 (D-018)                         |
+| source     | ENUM('library','yt_dlp')  | 확보 경로 (D-015 v3). 새 경로를 도입하면 ALTER로 값을 추가한다 (D-035) |
+| created_at | DATETIME                  |                                                                        |
+| updated_at | DATETIME                  |                                                                        |
 
 ### video_transcript_segments
 
@@ -273,7 +273,7 @@
 | --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | id              | BIGINT PK                                                      |                                                                                                                                       |
 | video_id        | BIGINT UNIQUE FK → videos.id                                   | 영상 1개당 큐 항목 1개 — 중복 등록 방지                                                                                               |
-| stage           | ENUM('transcript','identify','summarize') DEFAULT 'transcript' | 지금 처리할 단계. `transcript`=자막/STT, `identify`=LLM ① 호출 + 매칭, `summarize`=LLM ② 호출 (D-016, D-019)                          |
+| stage           | ENUM('transcript','identify','summarize') DEFAULT 'transcript' | 지금 처리할 단계. `transcript`=자막 확보, `identify`=LLM ① 호출 + 매칭, `summarize`=LLM ② 호출 (D-016, D-019)                         |
 | status          | ENUM('pending','processing','done','failed')                   | 지금 단계(`stage`)의 상태. 값 목록이 고정돼 늘어날 일이 없어 네이티브 ENUM 사용 — Python/Spring 어느 쪽이 쓰든 DB가 값을 강제 (D-019) |
 | attempt_count   | INT DEFAULT 0                                                  | 지금까지 시도 횟수                                                                                                                    |
 | next_attempt_at | DATETIME NULL                                                  | 이 시각 이후에만 재시도 가능(백오프). NULL이면 즉시 가능                                                                              |
