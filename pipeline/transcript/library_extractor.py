@@ -1,4 +1,4 @@
-"""Webshare 도입 뒤 재검토할 비공식 라이브러리 자막 추출기다."""
+"""DataImpulse canary 뒤 재도입 여부를 결정할 비공식 라이브러리 추출기다."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _DEFAULT_LANGUAGE_CODES = ("ko", "en")
 class LibraryTranscriptExtractor:
     """youtube-transcript-api를 공통 자막 결과 경계에 맞춰 감싼다.
 
-    D-015 v5에 따라 현재 PH-1 큐 실행에서는 호출하지 않는다.
+    D-015 v6에 따라 현재 PH-1 큐 실행에서는 호출하지 않는다.
     """
 
     def __init__(

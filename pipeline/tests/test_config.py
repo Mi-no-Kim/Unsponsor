@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from common.config import ConfigurationError, load_settings
+from common.config import (
+    ConfigurationError,
+    load_dataimpulse_proxy_settings,
+    load_settings,
+)
 
 
 REQUIRED_ENVIRONMENT_KEYS = (
@@ -243,6 +247,9 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertIn("QUEUE_MAX_ATTEMPTS=3", environment_example)
         self.assertIn("QUEUE_RETRY_BACKOFF_BASE_SECONDS=300", environment_example)
         self.assertIn("QUEUE_STALE_AFTER_SECONDS=1800", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_USERNAME=", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_PASSWORD=", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_COUNTRY=kr", environment_example)
         self.assertEqual(channels_example["channels"][0]["language_code"], "ko")
         self.assertRegex(
             channels_example["channels"][0]["channel_id"], r"^UC[A-Za-z0-9_-]{22}$"
@@ -254,6 +261,64 @@ class LoadSettingsTests(unittest.TestCase):
                 for video_id in channels_example["selected_video_ids"]
             )
         )
+
+    def test_loads_dataimpulse_canary_settings_without_exposing_secrets(self) -> None:
+        (self.test_repository_root / ".env").write_text(
+            "\n".join(
+                [
+                    "DATAIMPULSE_PROXY_USERNAME=private-login",
+                    "DATAIMPULSE_PROXY_PASSWORD=private-password",
+                    "DATAIMPULSE_PROXY_COUNTRY=KR",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        settings = load_dataimpulse_proxy_settings(
+            self.test_repository_root, environment={}
+        )
+
+        self.assertEqual(settings.username, "private-login")
+        self.assertEqual(settings.password, "private-password")
+        self.assertEqual(settings.country_code, "kr")
+        self.assertNotIn("private-login", repr(settings))
+        self.assertNotIn("private-password", repr(settings))
+
+    def test_rejects_parameterized_dataimpulse_login_and_invalid_country(self) -> None:
+        base_environment = {
+            "DATAIMPULSE_PROXY_PASSWORD": "private-password",
+            "DATAIMPULSE_PROXY_COUNTRY": "kr",
+        }
+        with self.assertRaisesRegex(ConfigurationError, "base Proxy Access login"):
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={
+                    **base_environment,
+                    "DATAIMPULSE_PROXY_USERNAME": "login__cr.kr",
+                },
+            )
+
+        with self.assertRaisesRegex(ConfigurationError, "two-letter country code"):
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={
+                    **base_environment,
+                    "DATAIMPULSE_PROXY_USERNAME": "private-login",
+                    "DATAIMPULSE_PROXY_COUNTRY": "south-korea",
+                },
+            )
+
+    def test_missing_dataimpulse_settings_fails_without_exposing_present_secret(self) -> None:
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "DATAIMPULSE_PROXY_PASSWORD, DATAIMPULSE_PROXY_COUNTRY",
+        ) as error:
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={"DATAIMPULSE_PROXY_USERNAME": "private-login"},
+            )
+
+        self.assertNotIn("private-login", str(error.exception))
 
 
 def _video_ids(count: int) -> list[str]:
