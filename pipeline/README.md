@@ -33,6 +33,20 @@ library 경로·DB·일반 실행 요약에는 전달하거나 기록하지 않�
 URL이 포함될 수 있으나, 쿠키·Authorization·Proxy-Authorization·PoToken 값과 자격 증명 query
 parameter는 마스킹한다. 자막 원문은 기록하지 않는다.
 
+32건 실제 큐 실행은 외부 자막 경로와 저장 성공을 확인하는 일회성 배치 통합 검증이다. 일상적인
+기능 변경마다 기존 큐를 비우거나 다시 처리하지 않는다. 아래 검증은 현재 로컬 MySQL의 단일
+트랜잭션 안에서 가짜 영상 7건으로 라이브러리 성공, yt-dlp 폴백, 자막 부재, 429 중단, 멈춘 행
+복구, 최신 자막·세그먼트 교체를 확인한 뒤 **항상 롤백**한다. 현재 행·자막·큐 상태는 커밋되지
+않으며 외부 YouTube에도 요청하지 않는다. MySQL의 auto-increment 값에는 작은 번호 공백이 생길 수
+있으므로, 로컬 워커를 함께 실행하지 않는 상태에서만 사용한다.
+
+```cmd
+.venv\Scripts\python.exe -m scripts.verify_transcript_stage_db --confirm-rollback-transaction
+```
+
+이 명령은 설정된 MySQL 호스트가 loopback이 아니면 중단하며, 결과에는 영상 ID·자막 원문을
+출력하지 않는다.
+
 ## W-025: HTTP 429 안전한 폴백 계약
 
 yt-dlp 자막 요청은 수동 자막과 원본 언어 자동 자막만 받는다. 자동 번역 자막은
