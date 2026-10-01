@@ -111,7 +111,7 @@ project-root/
 
 ├── pipeline/             # Python — 데이터 파이프라인
 │   ├── collector/           # 채널 풀 동기화, playlistItems 폴링, 백필 큐 관리
-│   ├── transcript/          # 자막 추출(현재 yt-dlp·PoToken, DataImpulse canary 뒤 라이브러리 재검토)
+│   ├── transcript/          # 자막 추출(DataImpulse 라이브러리 → yt-dlp → 필요 시 PoToken)
 │   ├── summarizer/          # SponsorBlock 연동, 협찬 판별, LLM 요약·카테고리 태깅
 │   ├── embedding/           # 벡터 임베딩 생성(검색용)
 │   ├── common/              # 공용 유틸(DB 모델, YouTube API 클라이언트, 설정)
@@ -147,8 +147,8 @@ project-root/
 ### 보류 (추후 결정)
 
 - 백필 큐 세부 스키마 — 방향은 확정(별도 메시지 큐 없이 MySQL 테이블 기반 큐 + `FOR UPDATE SKIP LOCKED`로 충분하다고 보고 있음, D-019). 상태 컬럼 설계, 재시도 횟수·간격 정책, 처리 중 멈춘 행 복구 방식 등 세부 스키마는 전체 DB 스키마 설계할 때 함께 짠다 (결정됨 → D-019, `schema.md`의 `video_processing_queue`)
-- 자막 부재 영상의 지연 재확인 정책 — 자동 자막이 나중에 생길 수는 있지만, 재확인 시점·횟수·적용 실패 코드는 별도 Work에서 실제 운영 근거로 결정한다 (D-015 v6)
-- `youtube-transcript-api` 재도입 — W-029에서 DataImpulse Residential Proxy의 효과와 보안 경계를 제한된 canary로 검증하고, `PASS`일 때만 별도 후속 Work에서 현재 실행 경로에 넣을지 결정한다 (D-015 v6)
+- 자막 부재 영상의 지연 재확인 정책 — 자동 자막이 나중에 생길 수는 있지만, 재확인 시점·횟수·적용 실패 코드는 별도 Work에서 실제 운영 근거로 결정한다 (D-015 v7)
+- 초기 데이터셋 자막 재실행 — W-029의 3건이 모두 첫 시도 성공해 `PASS`였고 W-030에서 DataImpulse 라이브러리를 실행 경로에 재도입했다. 기존 데이터셋을 재검사하려면 사용자가 DB 상태와 실행을 명시적으로 준비·확인하며, 자동 재등록·초기화 기능은 만들지 않는다 (D-015 v7)
 - Docker 사용 여부(프로덕션 배포) — AWS 배포 방식(EC2 직접 vs ECS/Fargate) 결정과 함께 추후 정함
 - 프로덕션 비밀값 관리 방식 — AWS Secrets Manager vs Parameter Store, 배포 방식 결정과 함께 추후 정함
 
@@ -181,12 +181,13 @@ project-root/
 
 ### 자막 추출
 
-1. 현재 1차이자 유일한 경로: `yt-dlp`로 자막을 요청한다. 필요 시 레포 밖 전용 경로의 YouTube 쿠키 파일을 이 경로에만 전달한다.
-2. PoToken이 필요한 실패에서만 파이프라인 작업 수명에 한정된 Provider를 호출한다. HTTP 429에서는 Provider와 같은 실행의 다음 큐 작업을 시작하지 않는다.
-3. IP 차단이 확인된 Python 비공식 라이브러리는 W-029의 DataImpulse canary가 `PASS`로 끝나고 별도 후속 Work가 승인되기 전까지 현재 실행 경로에서 제외한다. 구현·의존성과 기존 `library` 저장 이력은 보존한다.
-4. 예비 폴백(미구현): `yt-dlp`·온디맨드 Provider도 실패한다는 운영 증거가 생길 때 Chrome/WPC Provider를 별도 검토한다.
+1. 첫 번째 경로: DataImpulse Residential Proxy가 강제된 `youtube-transcript-api`로 자막을 요청한다. 설정 누락·프록시 인증 실패를 포함한 429 이외의 안전한 실패는 `yt-dlp` 폴백을 허용하고, 직접 egress는 사용하지 않는다.
+2. 두 번째 경로: `yt-dlp`로 자막을 요청한다. 레포 밖 전용 경로의 YouTube 쿠키 파일은 이 경로에만 선택적으로 전달한다.
+3. 세 번째 경로: `yt-dlp`가 명시적으로 PoToken을 요구할 때만 파이프라인 작업 수명에 한정된 Provider를 시작한다. `--provider-home` 지정 자체로 Provider를 미리 시작하지 않는다.
+4. 어느 활성 외부 경로에서든 HTTP 429가 나오면 같은 영상의 추가 폴백·Provider 시작과 같은 실행의 다음 큐 점유를 중단한다. DataImpulse 자격 증명은 라이브러리 밖으로 전달하지 않는다.
+5. 예비 폴백(미구현): 위 경로도 실패한다는 운영 증거가 생길 때 Chrome/WPC Provider를 별도 검토한다.
 
-(D-015 v6, D-049 v4)
+(D-015 v7, D-049 v5)
 
 ### 자막을 얻지 못한 영상
 

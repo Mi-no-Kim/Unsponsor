@@ -30,6 +30,11 @@ class _Downloader(AbstractContextManager["_Downloader"]):
         self.urls.append(url_list)
         if self.action == "download_error":
             raise DownloadError("private transcript contents")
+        if self.action == "pot_required":
+            raise DownloadError("PO Token required for this request")
+        if self.action == "pot_warning_no_subtitle":
+            self.options["logger"].warning("PO Token required for this request")
+            return 0
         if self.action == "wrapped_429":
             cause = HTTPError("https://private.example", 429, "private", {}, None)
             cause.close()
@@ -154,8 +159,10 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             r"C:\Users\test\youtube-cookies.txt",
         )
 
-    def test_extract_retries_through_loopback_provider_after_token_free_failure(self) -> None:
-        downloader_factory = _DownloaderFactory("download_error", "write_json3")
+    def test_extract_retries_through_provider_only_after_explicit_token_requirement(self) -> None:
+        downloader_factory = _DownloaderFactory(
+            "pot_warning_no_subtitle", "write_json3"
+        )
 
         result = YtDlpTranscriptExtractor(
             ytdlp_factory=downloader_factory,
@@ -175,6 +182,25 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
                 "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:49000"]},
             },
         )
+
+    def test_extract_does_not_start_provider_for_a_generic_failure(self) -> None:
+        downloader_factory = _DownloaderFactory("download_error")
+        provider_starts: list[None] = []
+
+        def provider_factory() -> _ProviderSession:
+            provider_starts.append(None)
+            return _ProviderSession()
+
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=downloader_factory,
+            provider_session_factory=provider_factory,
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
+        )
+        self.assertEqual(provider_starts, [])
 
     def test_extract_preserves_wrapped_429_without_starting_provider(self) -> None:
         downloader_factory = _DownloaderFactory("wrapped_429", "write_json3")
@@ -223,7 +249,7 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
 
     def test_extract_reports_po_token_requirement_when_no_provider_is_configured(self) -> None:
         result = YtDlpTranscriptExtractor(
-            ytdlp_factory=_DownloaderFactory("download_error")
+            ytdlp_factory=_DownloaderFactory("pot_required")
         ).extract("video000001")
 
         self.assertEqual(
@@ -243,7 +269,7 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
 
     def test_extract_reports_provider_startup_failure_without_exposing_details(self) -> None:
         result = YtDlpTranscriptExtractor(
-            ytdlp_factory=_DownloaderFactory("download_error"),
+            ytdlp_factory=_DownloaderFactory("pot_required"),
             provider_session_factory=_UnavailableProviderSession,
         ).extract("video000001")
 
@@ -301,4 +327,6 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
         )
         self.assertEqual(output.getvalue(), "")
-        self.assertIn("video000001 private upstream error", captured.getvalue())
+        self.assertIn("yt-dlp reported an error", captured.getvalue())
+        self.assertNotIn("video000001", captured.getvalue())
+        self.assertNotIn("private upstream error", captured.getvalue())
