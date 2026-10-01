@@ -111,7 +111,7 @@ project-root/
 
 ├── pipeline/             # Python — 데이터 파이프라인
 │   ├── collector/           # 채널 풀 동기화, playlistItems 폴링, 백필 큐 관리
-│   ├── transcript/          # 자막 추출(비공식 라이브러리, yt-dlp·PoToken 폴백)
+│   ├── transcript/          # 자막 추출(현재 yt-dlp·PoToken, Webshare 이후 라이브러리 재검토)
 │   ├── summarizer/          # SponsorBlock 연동, 협찬 판별, LLM 요약·카테고리 태깅
 │   ├── embedding/           # 벡터 임베딩 생성(검색용)
 │   ├── common/              # 공용 유틸(DB 모델, YouTube API 클라이언트, 설정)
@@ -147,7 +147,8 @@ project-root/
 ### 보류 (추후 결정)
 
 - 백필 큐 세부 스키마 — 방향은 확정(별도 메시지 큐 없이 MySQL 테이블 기반 큐 + `FOR UPDATE SKIP LOCKED`로 충분하다고 보고 있음, D-019). 상태 컬럼 설계, 재시도 횟수·간격 정책, 처리 중 멈춘 행 복구 방식 등 세부 스키마는 전체 DB 스키마 설계할 때 함께 짠다 (결정됨 → D-019, `schema.md`의 `video_processing_queue`)
-- 자막 부재 영상의 지연 재확인 정책 — 자동 자막이 나중에 생길 수는 있지만, 재확인 시점·횟수·적용 실패 코드는 별도 Work에서 실제 운영 근거로 결정한다 (D-015 v3)
+- 자막 부재 영상의 지연 재확인 정책 — 자동 자막이 나중에 생길 수는 있지만, 재확인 시점·횟수·적용 실패 코드는 별도 Work에서 실제 운영 근거로 결정한다 (D-015 v5)
+- `youtube-transcript-api` 재도입 — Webshare를 도입하는 별도 Work에서 프록시 효과와 보안 경계를 검증한 뒤 현재 실행 경로에 넣을지 결정한다 (D-015 v5)
 - Docker 사용 여부(프로덕션 배포) — AWS 배포 방식(EC2 직접 vs ECS/Fargate) 결정과 함께 추후 정함
 - 프로덕션 비밀값 관리 방식 — AWS Secrets Manager vs Parameter Store, 배포 방식 결정과 함께 추후 정함
 
@@ -180,12 +181,12 @@ project-root/
 
 ### 자막 추출
 
-1. 1차: Python 비공식 라이브러리(예: youtube-transcript-api류)로 시도
-2. 2차 폴백: 라이브러리가 막히거나 자막을 얻지 못하면 `yt-dlp`로 시도하고, 필요 시 파이프라인 실행 시점에만 PoToken Provider를 호출한다
-3. `yt-dlp`에는 필요할 때만 레포 밖 전용 경로의 YouTube 쿠키 파일을 전달할 수 있다. 이는 새 폴백이 아니라 `yt-dlp` 요청의 인증 입력이며, 라이브러리 경로에는 전달하지 않는다.
-4. 예비 폴백(미구현): `yt-dlp`·온디맨드 Provider도 실패한다는 운영 증거가 생길 때 Chrome/WPC Provider를 별도 검토한다
+1. 현재 1차이자 유일한 경로: `yt-dlp`로 자막을 요청한다. 필요 시 레포 밖 전용 경로의 YouTube 쿠키 파일을 이 경로에만 전달한다.
+2. PoToken이 필요한 실패에서만 파이프라인 작업 수명에 한정된 Provider를 호출한다. HTTP 429에서는 Provider와 같은 실행의 다음 큐 작업을 시작하지 않는다.
+3. IP 차단이 확인된 Python 비공식 라이브러리는 Webshare 도입과 검증 전까지 현재 실행 경로에서 제외한다. 구현·의존성과 기존 `library` 저장 이력은 보존한다.
+4. 예비 폴백(미구현): `yt-dlp`·온디맨드 Provider도 실패한다는 운영 증거가 생길 때 Chrome/WPC Provider를 별도 검토한다.
 
-(D-015 v4)
+(D-015 v5, D-049 v4)
 
 ### 자막을 얻지 못한 영상
 

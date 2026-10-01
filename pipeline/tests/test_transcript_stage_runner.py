@@ -19,41 +19,24 @@ from transcript.stage_runner import TranscriptStageRunner, _print_summary
 
 
 class TranscriptStageRunnerTests(unittest.TestCase):
-    def test_persists_a_library_success_then_advances_the_queue(self) -> None:
+    def test_persists_a_ytdlp_success_then_advances_the_queue(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 0)])
         persistence = _Persistence({101: "video000001"})
-        library = _Extractor(_success())
-        ytdlp = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
-
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
-
-        self.assertEqual(result.library_count, 1)
-        self.assertEqual(result.ytdlp_count, 0)
-        self.assertEqual(persistence.saved, [(101, TranscriptSource.LIBRARY, _success())])
-        self.assertEqual(queue.completed, [ClaimedTranscriptJob(1, 101, 0)])
-        self.assertEqual(ytdlp.calls, [])
-
-    def test_falls_back_to_ytdlp_when_the_library_cannot_get_a_transcript(self) -> None:
-        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)])
-        persistence = _Persistence({101: "video000001"})
-        library = _Extractor(_failure(TranscriptFailure.ACCESS_RESTRICTED))
         ytdlp = _Extractor(_success())
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
-        self.assertEqual(result.library_count, 0)
         self.assertEqual(result.ytdlp_count, 1)
-        self.assertEqual(persistence.saved[0][1], TranscriptSource.YT_DLP)
-        self.assertEqual(library.calls, ["video000001"])
+        self.assertEqual(persistence.saved, [(101, TranscriptSource.YT_DLP, _success())])
+        self.assertEqual(queue.completed, [ClaimedTranscriptJob(1, 101, 0)])
         self.assertEqual(ytdlp.calls, ["video000001"])
 
-    def test_records_only_the_final_safe_failure_when_both_paths_fail(self) -> None:
+    def test_records_only_the_safe_ytdlp_failure(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 2)], failure_status="failed")
         persistence = _Persistence({101: "video000001"})
-        library = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
         ytdlp = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
         self.assertEqual(result.failed_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 2), "rate_limited")])
@@ -65,42 +48,23 @@ class TranscriptStageRunnerTests(unittest.TestCase):
         second_job = ClaimedTranscriptJob(2, 102, 0)
         queue = _Queue([first_job, second_job])
         persistence = _Persistence({101: "video000001", 102: "video000002"})
-        library = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
-        ytdlp = _Extractor(_success())
+        ytdlp = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
         self.assertEqual(result.rate_limited_stop_count, 1)
         self.assertEqual(result.retry_scheduled_count, 1)
         self.assertEqual(queue.failures, [(first_job, "rate_limited")])
         self.assertEqual(queue.completed, [])
-        self.assertEqual(library.calls, ["video000001"])
-        self.assertEqual(ytdlp.calls, [])
-        self.assertEqual(queue.remaining_jobs, [second_job])
-
-    def test_ytdlp_rate_limit_also_stops_the_batch(self) -> None:
-        first_job = ClaimedTranscriptJob(1, 101, 0)
-        second_job = ClaimedTranscriptJob(2, 102, 0)
-        queue = _Queue([first_job, second_job])
-        persistence = _Persistence({101: "video000001", 102: "video000002"})
-        library = _Extractor(_failure(TranscriptFailure.ACCESS_RESTRICTED))
-        ytdlp = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
-
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
-
-        self.assertEqual(result.rate_limited_stop_count, 1)
-        self.assertEqual(queue.failures, [(first_job, "rate_limited")])
-        self.assertEqual(library.calls, ["video000001"])
         self.assertEqual(ytdlp.calls, ["video000001"])
         self.assertEqual(queue.remaining_jobs, [second_job])
 
     def test_converts_storage_failure_to_a_safe_retry(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="pending")
         persistence = _Persistence({101: "video000001"}, storage_error=RuntimeError("private"))
-        library = _Extractor(_success())
-        ytdlp = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
+        ytdlp = _Extractor(_success())
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
         self.assertEqual(result.retry_scheduled_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "transient_error")])
@@ -109,27 +73,23 @@ class TranscriptStageRunnerTests(unittest.TestCase):
     def test_missing_video_metadata_never_starts_an_extractor(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="failed")
         persistence = _Persistence({})
-        library = _Extractor(_success())
         ytdlp = _Extractor(_success())
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
         self.assertEqual(result.failed_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "invalid_response")])
-        self.assertEqual(library.calls, [])
         self.assertEqual(ytdlp.calls, [])
 
     def test_metadata_lookup_failure_becomes_a_safe_retry(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="pending")
         persistence = _Persistence({}, lookup_error=RuntimeError("private database error"))
-        library = _Extractor(_success())
         ytdlp = _Extractor(_success())
 
-        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+        result = TranscriptStageRunner(queue, persistence, ytdlp).run()
 
         self.assertEqual(result.retry_scheduled_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "transient_error")])
-        self.assertEqual(library.calls, [])
         self.assertEqual(ytdlp.calls, [])
 
     def test_recovers_every_stuck_job_before_claiming_new_work(self) -> None:
@@ -139,7 +99,6 @@ class TranscriptStageRunnerTests(unittest.TestCase):
         result = TranscriptStageRunner(
             queue,
             persistence,
-            _Extractor(_success()),
             _Extractor(_success()),
         ).run()
 
@@ -154,11 +113,11 @@ class TranscriptStageRunnerTests(unittest.TestCase):
                     _Queue([]),
                     _Persistence({}),
                     _Extractor(_success()),
-                    _Extractor(_success()),
                 ).run()
             )
 
-        self.assertIn("library=0", output.getvalue())
+        self.assertIn("yt_dlp=0", output.getvalue())
+        self.assertNotIn("library=", output.getvalue())
         self.assertIn("rate_limited_stop=0", output.getvalue())
         self.assertNotIn("video000001", output.getvalue())
         self.assertNotIn("private transcript", output.getvalue())

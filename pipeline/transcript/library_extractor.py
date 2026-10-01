@@ -1,4 +1,4 @@
-"""비공식 라이브러리로 영상 자막을 확보하는 1차 추출기다."""
+"""Webshare 도입 뒤 재검토할 비공식 라이브러리 자막 추출기다."""
 
 from __future__ import annotations
 
@@ -43,7 +43,10 @@ _DEFAULT_LANGUAGE_CODES = ("ko", "en")
 
 
 class LibraryTranscriptExtractor:
-    """youtube-transcript-api를 PH-1 자막 확보 흐름에 맞춰 감싼다."""
+    """youtube-transcript-api를 공통 자막 결과 경계에 맞춰 감싼다.
+
+    D-015 v5에 따라 현재 PH-1 큐 실행에서는 호출하지 않는다.
+    """
 
     def __init__(
         self,

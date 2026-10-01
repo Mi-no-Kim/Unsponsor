@@ -19,7 +19,7 @@ class TranscriptFailure(StrEnum):
 
 
 class TranscriptSource(StrEnum):
-    """성공한 자막을 확보한 PH-1 경로다."""
+    """현재 yt-dlp 결과와 기존 library 이력을 함께 보존하는 출처다."""
 
     LIBRARY = "library"
     YT_DLP = "yt_dlp"
