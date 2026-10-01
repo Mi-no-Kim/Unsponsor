@@ -38,6 +38,15 @@ class QueueSettings:
 
 
 @dataclass(frozen=True)
+class DataImpulseProxySettings:
+    """DataImpulse canary에만 쓰는 레포 밖 프록시 자격 증명이다."""
+
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    country_code: str
+
+
+@dataclass(frozen=True)
 class ChannelSeed:
     channel_id: str
     language_code: str
@@ -66,6 +75,12 @@ _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _QUEUE_MAX_ATTEMPTS_KEY = "QUEUE_MAX_ATTEMPTS"
 _QUEUE_RETRY_BACKOFF_BASE_SECONDS_KEY = "QUEUE_RETRY_BACKOFF_BASE_SECONDS"
 _QUEUE_STALE_AFTER_SECONDS_KEY = "QUEUE_STALE_AFTER_SECONDS"
+_DATAIMPULSE_REQUIRED_KEYS = (
+    "DATAIMPULSE_PROXY_USERNAME",
+    "DATAIMPULSE_PROXY_PASSWORD",
+    "DATAIMPULSE_PROXY_COUNTRY",
+)
+_COUNTRY_CODE_PATTERN = re.compile(r"^[a-z]{2}$")
 
 
 def load_settings(
@@ -114,6 +129,42 @@ def load_settings(
         channels=_read_channel_seeds(channel_seed_document),
         selected_video_ids=_read_selected_video_ids(channel_seed_document),
         queue=_read_queue_settings(values),
+    )
+
+
+def load_dataimpulse_proxy_settings(
+    repository_root: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> DataImpulseProxySettings:
+    """루트 ``.env``와 프로세스 환경에서 canary 프록시 설정을 읽는다."""
+
+    values = _read_dotenv(Path(repository_root) / ".env")
+    values.update(os.environ if environment is None else environment)
+
+    missing_keys = [key for key in _DATAIMPULSE_REQUIRED_KEYS if not values.get(key)]
+    if missing_keys:
+        raise ConfigurationError(
+            "Missing required DataImpulse configuration: " + ", ".join(missing_keys)
+        )
+
+    username = values["DATAIMPULSE_PROXY_USERNAME"].strip()
+    password = values["DATAIMPULSE_PROXY_PASSWORD"]
+    country_code = values["DATAIMPULSE_PROXY_COUNTRY"].strip().lower()
+
+    if "__" in username:
+        raise ConfigurationError(
+            "DATAIMPULSE_PROXY_USERNAME must be the base Proxy Access login"
+        )
+    if not _COUNTRY_CODE_PATTERN.fullmatch(country_code):
+        raise ConfigurationError(
+            "DATAIMPULSE_PROXY_COUNTRY must be a two-letter country code"
+        )
+
+    return DataImpulseProxySettings(
+        username=username,
+        password=password,
+        country_code=country_code,
     )
 
 

@@ -18,7 +18,14 @@ class RestrictedErrorLogTests(unittest.TestCase):
                 encoding="utf-8",
             )
             logger = configure_restricted_error_log(
-                path, cookie_file=cookie_file, console_output=False
+                path,
+                cookie_file=cookie_file,
+                secret_values=(
+                    "private-proxy-login",
+                    "private-proxy-password",
+                    "video000001",
+                ),
+                console_output=False,
             )
             try:
                 logger.error(
@@ -34,6 +41,10 @@ class RestrictedErrorLogTests(unittest.TestCase):
                     "https://example.test/subtitle?sig=secret-signature"
                     "&lsig=secret-lsig&spc=secret-spc"
                 )
+                logger.error(
+                    "proxy=http://private-proxy-login:private-proxy-password@"
+                    "gw.dataimpulse.com:823 video=video000001"
+                )
                 logger.error("unexpected parser detail: opaque-cookie-value")
                 for handler in logger.handlers:
                     handler.flush()
@@ -44,7 +55,7 @@ class RestrictedErrorLogTests(unittest.TestCase):
                     logger.removeHandler(handler)
                     handler.close()
 
-        self.assertIn("video000001 upstream failed", log_contents)
+        self.assertIn("<redacted> upstream failed", log_contents)
         self.assertIn("Cookie: <redacted>", log_contents)
         self.assertIn("Authorization=<redacted>", log_contents)
         self.assertIn("potoken=<redacted>", log_contents)
@@ -58,3 +69,9 @@ class RestrictedErrorLogTests(unittest.TestCase):
         self.assertNotIn("secret-lsig", log_contents)
         self.assertNotIn("secret-spc", log_contents)
         self.assertNotIn("opaque-cookie-value", log_contents)
+        self.assertNotIn("private-proxy-login", log_contents)
+        self.assertNotIn("private-proxy-password", log_contents)
+        self.assertNotIn("video000001", log_contents)
+        self.assertIn(
+            "http://<redacted>:<redacted>@gw.dataimpulse.com:823", log_contents
+        )

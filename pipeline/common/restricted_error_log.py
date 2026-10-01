@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -16,6 +17,9 @@ _CREDENTIAL_QUERY_PARAMETER = re.compile(
     r"(?i)([?&](?:access[_-]?token|authorization|cookie|key|password|token|"
     r"po[_-]?token|pot|s|sig|signature|lsig|spc|"
     r"x-goog-(?:credential|signature|security-token))=)([^&#\s]+)"
+)
+_PROXY_URL_USERINFO = re.compile(
+    r"(?i)(\b(?:https?|socks5h?)://)([^\s/@:]+):([^\s/@]+)@"
 )
 
 
@@ -34,6 +38,7 @@ def configure_restricted_error_log(
     path: Path,
     *,
     cookie_file: Path | None = None,
+    secret_values: Sequence[str] = (),
     console_output: bool = True,
 ) -> logging.Logger:
     """콘솔과 로컬 파일에만 자막 단계의 상세 오류를 기록한다."""
@@ -50,7 +55,9 @@ def configure_restricted_error_log(
 
     formatter = _RestrictedErrorFormatter(
         "%(asctime)s %(levelname)s %(name)s %(message)s",
-        secret_values=_read_cookie_values(cookie_file),
+        secret_values=_merge_secret_values(
+            _read_cookie_values(cookie_file), tuple(secret_values)
+        ),
     )
     file_handler = logging.FileHandler(path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
@@ -78,9 +85,20 @@ def transcript_error_logger() -> logging.Logger:
 def _redact_credentials(message: str, secret_values: tuple[str, ...]) -> str:
     message = _CREDENTIAL_VALUE.sub(r"\1<redacted>", message)
     message = _CREDENTIAL_QUERY_PARAMETER.sub(r"\1<redacted>", message)
+    message = _PROXY_URL_USERINFO.sub(r"\1<redacted>:<redacted>@", message)
     for secret_value in secret_values:
         message = message.replace(secret_value, "<redacted>")
     return message
+
+
+def _merge_secret_values(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {value for group in groups for value in group if value},
+            key=len,
+            reverse=True,
+        )
+    )
 
 
 def _read_cookie_values(cookie_file: Path | None) -> tuple[str, ...]:

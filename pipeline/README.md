@@ -1,5 +1,54 @@
 # Pipeline 로컬 실행
 
+## W-029: DataImpulse Residential Proxy canary
+
+현재 큐 실행 경로를 바꾸기 전에, DataImpulse 프록시를 통한 `youtube-transcript-api`의 실제 접근과
+자격 증명 마스킹을 별도로 검증한다. 이 canary는 DB·처리 큐·쿠키·yt-dlp·PoToken Provider를
+사용하지 않는다.
+
+DataImpulse 대시보드는 다음 설정을 사용한다.
+
+- Residential Proxy의 Default Targeting
+- South Korea 국가 단위 타기팅
+- Rotating, HTTP/HTTPS, DNS hostname
+- Rotation interval·Anonymous filter·Exclude ASN은 설정하지 않음
+
+루트 `.env`에는 Proxy Access 상단의 기본 Login과 Password만 넣는다. Proxy List 또는 Basic URL에
+표시되는 `login:password@hostname:port` 전체 문자열과 `__cr.*`가 붙은 login은 넣지 않는다. 실제
+값은 Git·Issue·PR·일반 로그에 기록하지 않는다.
+
+```dotenv
+DATAIMPULSE_PROXY_USERNAME=<Proxy Access 기본 Login>
+DATAIMPULSE_PROXY_PASSWORD=<Proxy Access Password>
+DATAIMPULSE_PROXY_COUNTRY=kr
+```
+
+W-021에서 라이브러리 성공이 확인된 공개 자막 영상 중 3~5건을 골라 예시 파일을 복사한 로컬
+입력에 넣는다. 실제 영상 ID 파일은 Git에서 제외된다.
+
+```cmd
+copy dataimpulse-canary.example.json dataimpulse-canary.local.json
+```
+
+```cmd
+.venv\Scripts\python.exe -m transcript.dataimpulse_canary --video-id-file dataimpulse-canary.local.json
+```
+
+영상마다 별도 HTTP 세션으로 최대 2회만 시도한다. 두 번째 시도까지 `rate_limited`이면 남은
+영상은 요청하지 않는다. 출력 JSON에는 순번별 안전 코드·시도 횟수·소요 시간·자막 글자 수와
+전체 판정만 포함하며, 영상 ID·자막 원문·프록시 URL·자격 증명은 포함하지 않는다. 상세 오류는
+기본값 `%LOCALAPPDATA%\Unsponsor\logs\dataimpulse-canary-errors.log`에만 기록되고 같은 민감값을
+마스킹한다.
+
+| 종료 코드 | 판정          | 의미                                                             |
+| --------- | ------------- | ---------------------------------------------------------------- |
+| `0`       | `PASS`        | 3~5건이 첫 시도에 모두 성공                                      |
+| `3`       | `CONDITIONAL` | 모두 성공했지만 한 건 이상이 제한된 두 번째 시도에서 회복        |
+| `2`       | `FAIL`        | 최종 실패·반복 429·설정 오류 또는 요청하지 않은 남은 항목이 있음 |
+
+`PASS`일 때만 별도 후속 Work에서 라이브러리를 현재 큐 실행 경로에 다시 넣는다. 그 전까지 W-028의
+yt-dlp 단일 경로가 Current Truth다.
+
 ## W-028: yt-dlp 우선 transcript 단계 실행
 
 큐의 `transcript/pending` 작업은 아래 명령으로 처리한다. 멈춘 작업을 먼저 재시도 정책으로
@@ -27,9 +76,9 @@ DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider�
 안전하게 전이하고, 아직 점유하지 않은 다른 영상은 요청하지 않은 채 `pending`으로 남긴다.
 실행 요약에는 `yt_dlp` 처리 건수와 안전한 상태 수치만 출력한다.
 
-로컬 egress에서 IP 차단이 확인된 `youtube-transcript-api`는 Webshare를 도입하고 별도 Work에서
-효과와 보안 경계를 검증하기 전까지 현재 큐 실행에서 호출하지 않는다. 구현·의존성과 과거
-`library` 출처 행은 제거하지 않는다.
+로컬 egress에서 IP 차단이 확인된 `youtube-transcript-api`는 W-029의 DataImpulse canary가
+`PASS`로 끝나고 별도 후속 Work가 실행 경로 재도입을 승인하기 전까지 현재 큐 실행에서 호출하지
+않는다. 구현·의존성과 과거 `library` 출처 행은 제거하지 않는다.
 
 외부 오류 원문·HTTP 상태·traceback은 기본값
 `%LOCALAPPDATA%\Unsponsor\logs\transcript-errors.log`에 남고 오류가 발생한 경우에만 콘솔에도
