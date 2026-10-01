@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+from contextlib import redirect_stdout
+from io import StringIO
+import unittest
+
+from collector.processing_queue_worker import (
+    ClaimedTranscriptJob,
+    FailureTransition,
+    QueueFailure,
+)
+from transcript.model import (
+    TranscriptExtractionResult,
+    TranscriptFailure,
+    TranscriptSegment,
+    TranscriptSource,
+)
+from transcript.stage_runner import TranscriptStageRunner, _print_summary
+
+
+class TranscriptStageRunnerTests(unittest.TestCase):
+    def test_persists_a_library_success_then_advances_the_queue(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)])
+        persistence = _Persistence({101: "video000001"})
+        library = _Extractor(_success())
+        ytdlp = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.library_count, 1)
+        self.assertEqual(result.ytdlp_count, 0)
+        self.assertEqual(persistence.saved, [(101, TranscriptSource.LIBRARY, _success())])
+        self.assertEqual(queue.completed, [ClaimedTranscriptJob(1, 101, 0)])
+        self.assertEqual(ytdlp.calls, [])
+
+    def test_falls_back_to_ytdlp_when_the_library_cannot_get_a_transcript(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)])
+        persistence = _Persistence({101: "video000001"})
+        library = _Extractor(_failure(TranscriptFailure.ACCESS_RESTRICTED))
+        ytdlp = _Extractor(_success())
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.library_count, 0)
+        self.assertEqual(result.ytdlp_count, 1)
+        self.assertEqual(persistence.saved[0][1], TranscriptSource.YT_DLP)
+        self.assertEqual(library.calls, ["video000001"])
+        self.assertEqual(ytdlp.calls, ["video000001"])
+
+    def test_records_only_the_final_safe_failure_when_both_paths_fail(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 2)], failure_status="failed")
+        persistence = _Persistence({101: "video000001"})
+        library = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
+        ytdlp = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.failed_count, 1)
+        self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 2), "rate_limited")])
+        self.assertEqual(persistence.saved, [])
+        self.assertEqual(queue.completed, [])
+
+    def test_rate_limit_stops_the_batch_without_claiming_another_video(self) -> None:
+        first_job = ClaimedTranscriptJob(1, 101, 0)
+        second_job = ClaimedTranscriptJob(2, 102, 0)
+        queue = _Queue([first_job, second_job])
+        persistence = _Persistence({101: "video000001", 102: "video000002"})
+        library = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
+        ytdlp = _Extractor(_success())
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.rate_limited_stop_count, 1)
+        self.assertEqual(result.retry_scheduled_count, 1)
+        self.assertEqual(queue.failures, [(first_job, "rate_limited")])
+        self.assertEqual(queue.completed, [])
+        self.assertEqual(library.calls, ["video000001"])
+        self.assertEqual(ytdlp.calls, [])
+        self.assertEqual(queue.remaining_jobs, [second_job])
+
+    def test_ytdlp_rate_limit_also_stops_the_batch(self) -> None:
+        first_job = ClaimedTranscriptJob(1, 101, 0)
+        second_job = ClaimedTranscriptJob(2, 102, 0)
+        queue = _Queue([first_job, second_job])
+        persistence = _Persistence({101: "video000001", 102: "video000002"})
+        library = _Extractor(_failure(TranscriptFailure.ACCESS_RESTRICTED))
+        ytdlp = _Extractor(_failure(TranscriptFailure.RATE_LIMITED))
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.rate_limited_stop_count, 1)
+        self.assertEqual(queue.failures, [(first_job, "rate_limited")])
+        self.assertEqual(library.calls, ["video000001"])
+        self.assertEqual(ytdlp.calls, ["video000001"])
+        self.assertEqual(queue.remaining_jobs, [second_job])
+
+    def test_converts_storage_failure_to_a_safe_retry(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="pending")
+        persistence = _Persistence({101: "video000001"}, storage_error=RuntimeError("private"))
+        library = _Extractor(_success())
+        ytdlp = _Extractor(_failure(TranscriptFailure.NO_TRANSCRIPT))
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.retry_scheduled_count, 1)
+        self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "transient_error")])
+        self.assertEqual(queue.completed, [])
+
+    def test_missing_video_metadata_never_starts_an_extractor(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="failed")
+        persistence = _Persistence({})
+        library = _Extractor(_success())
+        ytdlp = _Extractor(_success())
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.failed_count, 1)
+        self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "invalid_response")])
+        self.assertEqual(library.calls, [])
+        self.assertEqual(ytdlp.calls, [])
+
+    def test_metadata_lookup_failure_becomes_a_safe_retry(self) -> None:
+        queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="pending")
+        persistence = _Persistence({}, lookup_error=RuntimeError("private database error"))
+        library = _Extractor(_success())
+        ytdlp = _Extractor(_success())
+
+        result = TranscriptStageRunner(queue, persistence, library, ytdlp).run()
+
+        self.assertEqual(result.retry_scheduled_count, 1)
+        self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "transient_error")])
+        self.assertEqual(library.calls, [])
+        self.assertEqual(ytdlp.calls, [])
+
+    def test_recovers_every_stuck_job_before_claiming_new_work(self) -> None:
+        queue = _Queue([], recovery_count=2)
+        persistence = _Persistence({})
+
+        result = TranscriptStageRunner(
+            queue,
+            persistence,
+            _Extractor(_success()),
+            _Extractor(_success()),
+        ).run()
+
+        self.assertEqual(result.recovered_count, 2)
+
+    def test_summary_never_prints_video_identifiers_or_transcript_text(self) -> None:
+        output = StringIO()
+
+        with redirect_stdout(output):
+            _print_summary(
+                TranscriptStageRunner(
+                    _Queue([]),
+                    _Persistence({}),
+                    _Extractor(_success()),
+                    _Extractor(_success()),
+                ).run()
+            )
+
+        self.assertIn("library=0", output.getvalue())
+        self.assertIn("rate_limited_stop=0", output.getvalue())
+        self.assertNotIn("video000001", output.getvalue())
+        self.assertNotIn("private transcript", output.getvalue())
+
+
+class _Queue:
+    def __init__(
+        self,
+        jobs: list[ClaimedTranscriptJob],
+        *,
+        failure_status: str = "pending",
+        recovery_count: int = 0,
+    ) -> None:
+        self._jobs = jobs.copy()
+        self._failure_status = failure_status
+        self._recovery_count = recovery_count
+        self.completed: list[ClaimedTranscriptJob] = []
+        self.failures: list[tuple[ClaimedTranscriptJob, str]] = []
+
+    @property
+    def remaining_jobs(self) -> list[ClaimedTranscriptJob]:
+        return self._jobs.copy()
+
+    def claim_next_transcript(self) -> ClaimedTranscriptJob | None:
+        return self._jobs.pop(0) if self._jobs else None
+
+    def complete_transcript(self, job: ClaimedTranscriptJob) -> None:
+        self.completed.append(job)
+
+    def fail_transcript(
+        self, job: ClaimedTranscriptJob, failure: QueueFailure
+    ) -> FailureTransition:
+        self.failures.append((job, failure.code))
+        return FailureTransition(job.queue_id, job.attempt_count + 1, self._failure_status)
+
+    def recover_one_stuck_transcript(self) -> FailureTransition | None:
+        if self._recovery_count == 0:
+            return None
+        self._recovery_count -= 1
+        return FailureTransition(99, 1, "pending")
+
+
+class _Persistence:
+    def __init__(
+        self,
+        video_ids: dict[int, str],
+        *,
+        storage_error: Exception | None = None,
+        lookup_error: Exception | None = None,
+    ) -> None:
+        self._video_ids = video_ids
+        self._storage_error = storage_error
+        self._lookup_error = lookup_error
+        self.saved: list[
+            tuple[int, TranscriptSource, TranscriptExtractionResult]
+        ] = []
+
+    def find_youtube_video_id(self, video_id: int) -> str | None:
+        if self._lookup_error is not None:
+            raise self._lookup_error
+        return self._video_ids.get(video_id)
+
+    def replace_success(
+        self,
+        video_id: int,
+        source: TranscriptSource,
+        result: TranscriptExtractionResult,
+    ) -> None:
+        if self._storage_error is not None:
+            raise self._storage_error
+        self.saved.append((video_id, source, result))
+
+
+class _Extractor:
+    def __init__(self, result: TranscriptExtractionResult) -> None:
+        self._result = result
+        self.calls: list[str] = []
+
+    def extract(self, video_id: str) -> TranscriptExtractionResult:
+        self.calls.append(video_id)
+        return self._result
+
+
+def _success() -> TranscriptExtractionResult:
+    return TranscriptExtractionResult.succeeded(
+        (TranscriptSegment(0, 0, 1000, "private transcript"),)
+    )
+
+
+def _failure(failure: TranscriptFailure) -> TranscriptExtractionResult:
+    return TranscriptExtractionResult.failed(failure)

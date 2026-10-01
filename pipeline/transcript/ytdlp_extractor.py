@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ from typing import ContextManager, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from common.restricted_error_log import transcript_error_logger
 from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSegment
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
@@ -50,6 +52,22 @@ class _ProviderSession(Protocol):
 
 YtDlpFactory = Callable[[Mapping[str, object]], ContextManager[_YtDlp]]
 ProviderSessionFactory = Callable[[], ContextManager[_ProviderSession]]
+
+
+class _YtDlpErrorLogger:
+    """yt-dlp 원문을 제한된 오류 로그에만 전달한다."""
+
+    def __init__(self, error_logger: logging.Logger) -> None:
+        self._error_logger = error_logger
+
+    def debug(self, message: str) -> None:
+        self._error_logger.debug("yt-dlp: %s", message)
+
+    def warning(self, message: str) -> None:
+        self._error_logger.warning("yt-dlp: %s", message)
+
+    def error(self, message: str) -> None:
+        self._error_logger.error("yt-dlp: %s", message)
 
 
 class ProviderUnavailable(RuntimeError):
@@ -137,9 +155,11 @@ class YtDlpTranscriptExtractor:
         self,
         *,
         provider_home: Path | None = None,
+        cookie_file: Path | None = None,
         node_executable: str | Path = "node",
         ytdlp_factory: YtDlpFactory = YoutubeDL,
         provider_session_factory: ProviderSessionFactory | None = None,
+        error_logger: logging.Logger | None = None,
     ) -> None:
         self._ytdlp_factory = ytdlp_factory
         if provider_session_factory is not None:
@@ -152,6 +172,10 @@ class YtDlpTranscriptExtractor:
         else:
             self._provider_session_factory = None
         self._node_executable = node_executable
+        self._cookie_file = Path(cookie_file) if cookie_file is not None else None
+        self._error_logger = (
+            error_logger if error_logger is not None else transcript_error_logger()
+        )
 
     def extract(
         self,
@@ -212,6 +236,9 @@ class YtDlpTranscriptExtractor:
                     provider_base_url=provider.base_url,
                 )
         except (ProviderUnavailable, OSError, subprocess.SubprocessError):
+            self._error_logger.exception(
+                "yt-dlp PoToken provider was unavailable; video_id=%s", video_id
+            )
             return TranscriptExtractionResult.failed(TranscriptFailure.PO_TOKEN_REQUIRED)
 
         if fallback_result.is_success:
@@ -259,17 +286,30 @@ class YtDlpTranscriptExtractor:
                         language_code=language_code,
                         node_executable=self._node_executable,
                         provider_base_url=provider_base_url,
+                        cookie_file=self._cookie_file,
+                        error_logger=self._error_logger,
                     )
                 ) as downloader:
                     exit_code = downloader.download(
                         [_YOUTUBE_WATCH_URL.format(video_id=video_id)]
                     )
             except DownloadError as error:
+                self._error_logger.exception(
+                    "yt-dlp subtitle download failed; video_id=%s", video_id
+                )
                 return TranscriptExtractionResult.failed(_download_failure(error))
             except Exception as error:
+                self._error_logger.exception(
+                    "yt-dlp subtitle extraction failed; video_id=%s", video_id
+                )
                 return TranscriptExtractionResult.failed(_download_failure(error))
 
             if exit_code != 0:
+                self._error_logger.error(
+                    "yt-dlp exited with a non-zero status: %s; video_id=%s",
+                    exit_code,
+                    video_id,
+                )
                 return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
 
             subtitle_files = tuple(output_directory.glob("*.json3"))
@@ -282,7 +322,16 @@ class YtDlpTranscriptExtractor:
                 return TranscriptExtractionResult.succeeded(
                     _normalize_json3(subtitle_files[0])
                 )
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+            ):
+                self._error_logger.exception(
+                    "yt-dlp wrote an invalid JSON3 subtitle; video_id=%s", video_id
+                )
                 return TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE)
 
 
@@ -292,6 +341,8 @@ def _yt_dlp_options(
     language_code: str,
     node_executable: str | Path,
     provider_base_url: str | None,
+    cookie_file: Path | None,
+    error_logger: logging.Logger,
 ) -> dict[str, object]:
     """수동·원본 자동 자막만 느리고 제한된 요청으로 JSON3에 기록한다."""
 
@@ -312,6 +363,7 @@ def _yt_dlp_options(
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "logger": _YtDlpErrorLogger(error_logger),
         "js_runtimes": {"node": {"path": str(node_executable)}},
         "extractor_args": {"youtube": {"skip": ["translated_subs"]}},
     }
@@ -323,6 +375,8 @@ def _yt_dlp_options(
             },
             "youtubepot-bgutilhttp": {"base_url": [provider_base_url]},
         }
+    if cookie_file is not None:
+        options["cookiefile"] = str(cookie_file)
     return options
 
 

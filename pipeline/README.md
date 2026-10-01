@@ -1,5 +1,52 @@
 # Pipeline 로컬 실행
 
+## W-021: transcript 단계 통합 실행
+
+큐의 `transcript/pending` 작업은 아래 명령으로 처리한다. 멈춘 작업을 먼저 재시도 정책으로
+복구한 뒤, 라이브러리 → yt-dlp·PoToken 순서로 자막을 확보한다. 성공한 자막의 원문·출처·시간
+세그먼트는 한 DB 트랜잭션으로 교체하고, 그 뒤에만 큐를 `identify/pending`으로 넘긴다.
+
+```cmd
+.venv\Scripts\python.exe -m transcript.stage_runner --provider-home C:\tools\bgutil-ytdlp-pot-provider\server --cookie-file "%LOCALAPPDATA%\Unsponsor\secrets\youtube-cookies.txt"
+```
+
+적용 전에는 아래 명령으로 기존 자막 `source` 행이 새 enum에 안전하게 포함되는지 먼저 확인한다.
+이 명령은 출처별 행 수와 적용 가능 여부만 출력하며, 영상 ID와 자막 원문은 읽거나 출력하지 않는다.
+
+```cmd
+.venv\Scripts\python.exe -m transcript.migration_preflight
+```
+
+`safe_to_migrate=True`일 때에만 Flyway V5를 로컬 DB에 적용한다. `False`라면 기존 행을 임의로
+변경하거나 삭제하지 않고, 별도 결정으로 보존 방식을 정한다.
+
+`--cookie-file`은 Netscape 형식의 레포 밖 YouTube 쿠키 파일을 `yt-dlp`에만 전달한다.
+library 경로·DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider가 준비되지 않은
+환경에서는 `--provider-home`을 생략할 수 있다. 이 경우 PoToken이 필요한 yt-dlp 자막은
+`po_token_required`로만 끝난다. `rate_limited_stop=1`이면 HTTP 429를 받은 현재 영상만
+안전하게 전이하고, 아직 점유하지 않은 다른 영상은 요청하지 않은 채 `pending`으로 남긴다.
+실행 요약에는 `library`·`yt_dlp` 처리 건수와 안전한 상태 수치만 출력한다.
+
+외부 오류 원문·HTTP 상태·traceback은 기본값
+`%LOCALAPPDATA%\Unsponsor\logs\transcript-errors.log`에 남고 오류가 발생한 경우에만 콘솔에도
+표시된다. `--error-log <경로>`로 로컬 전용 파일을 바꿀 수 있다. 이 오류 로그에는 영상 ID와
+URL이 포함될 수 있으나, 쿠키·Authorization·Proxy-Authorization·PoToken 값과 자격 증명 query
+parameter는 마스킹한다. 자막 원문은 기록하지 않는다.
+
+32건 실제 큐 실행은 외부 자막 경로와 저장 성공을 확인하는 일회성 배치 통합 검증이다. 일상적인
+기능 변경마다 기존 큐를 비우거나 다시 처리하지 않는다. 아래 검증은 현재 로컬 MySQL의 단일
+트랜잭션 안에서 가짜 영상 7건으로 라이브러리 성공, yt-dlp 폴백, 자막 부재, 429 중단, 멈춘 행
+복구, 최신 자막·세그먼트 교체를 확인한 뒤 **항상 롤백**한다. 현재 행·자막·큐 상태는 커밋되지
+않으며 외부 YouTube에도 요청하지 않는다. MySQL의 auto-increment 값에는 작은 번호 공백이 생길 수
+있으므로, 로컬 워커를 함께 실행하지 않는 상태에서만 사용한다.
+
+```cmd
+.venv\Scripts\python.exe -m scripts.verify_transcript_stage_db --confirm-rollback-transaction
+```
+
+이 명령은 설정된 MySQL 호스트가 loopback이 아니면 중단하며, 결과에는 영상 ID·자막 원문을
+출력하지 않는다.
+
 ## W-025: HTTP 429 안전한 폴백 계약
 
 yt-dlp 자막 요청은 수동 자막과 원본 언어 자동 자막만 받는다. 자동 번역 자막은
@@ -10,11 +57,12 @@ yt-dlp 자막 요청은 수동 자막과 원본 언어 자동 자막만 받는�
 - 자막 다운로드 전 대기: 35초
 
 HTTP 429는 세부 오류·URL·영상 식별자를 남기지 않고 `rate_limited` 결과로만 전달한다.
-이 결과가 나오면 같은 실행에서 Provider를 시작하면 안 된다. 다음 예약 실행은 처음
-경로부터 다시 시작한다.
+이 결과가 나오면 같은 실행에서 Provider를 시작하면 안 되며, transcript 단계 실행기는
+아직 점유하지 않은 다른 영상도 요청하지 않고 종료한다. 다음 예약 실행은 처음 경로부터
+다시 시작한다.
 
-PoToken Provider·쿠키·고정 EIP가 429를 해결하는지 여부는 이 Work의 결론이 아니다.
-인증된 단일 canary는 별도 인프라 승인이 난 뒤에만 수행한다.
+PoToken Provider·고정 EIP가 429를 해결하는지 여부는 이 Work의 결론이 아니다. 쿠키를 쓴
+로컬 큐 실행은 W-021의 실제 저장·실패 경로를 검증하는 것이며, AWS 운영 채택은 별도 검증한다.
 
 ## W-020: faster-whisper STT 최종 폴백 — 취소
 

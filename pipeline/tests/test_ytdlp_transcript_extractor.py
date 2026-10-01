@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from contextlib import AbstractContextManager
+import logging
+from contextlib import AbstractContextManager, redirect_stderr
+from io import StringIO
 from pathlib import Path
 import unittest
 from urllib.error import HTTPError
@@ -38,6 +40,9 @@ class _Downloader(AbstractContextManager["_Downloader"]):
             error = HTTPError("https://private.example", 429, "private", {}, None)
             error.close()
             raise error
+        if self.action == "write_error_to_logger":
+            self.options["logger"].error("video000001 private upstream error")
+            return 1
         if self.action == "nonzero":
             return 1
         if self.action == "write_json3":
@@ -132,7 +137,22 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
         self.assertEqual(options["fragment_retries"], 0)
         self.assertEqual(options["sleep_interval_requests"], 2.0)
         self.assertEqual(options["sleep_interval_subtitles"], 35.0)
+        self.assertNotIn("cookiefile", options)
         self.assertFalse(Path(options["paths"]["home"]).exists())
+
+    def test_extract_passes_an_explicit_cookie_file_only_to_ytdlp(self) -> None:
+        downloader_factory = _DownloaderFactory("write_json3")
+
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=downloader_factory,
+            cookie_file=Path(r"C:\Users\test\youtube-cookies.txt"),
+        ).extract("video000001")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(
+            downloader_factory.downloaders[0].options["cookiefile"],
+            r"C:\Users\test\youtube-cookies.txt",
+        )
 
     def test_extract_retries_through_loopback_provider_after_token_free_failure(self) -> None:
         downloader_factory = _DownloaderFactory("download_error", "write_json3")
@@ -256,3 +276,29 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
         )
         self.assertNotIn("private transcript", repr(result))
+
+    def test_extract_sends_ytdlp_error_to_restricted_logger_not_stderr(self) -> None:
+        output = StringIO()
+        error_logger = logging.getLogger(self.id())
+        error_logger.setLevel(logging.ERROR)
+        error_logger.propagate = False
+        captured = StringIO()
+        handler = logging.StreamHandler(captured)
+        error_logger.addHandler(handler)
+
+        try:
+            with redirect_stderr(output):
+                result = YtDlpTranscriptExtractor(
+                    ytdlp_factory=_DownloaderFactory("write_error_to_logger"),
+                    error_logger=error_logger,
+                ).extract_token_free("video000001")
+        finally:
+            error_logger.removeHandler(handler)
+            handler.close()
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
+        )
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("video000001 private upstream error", captured.getvalue())

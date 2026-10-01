@@ -9,7 +9,7 @@ from transcript.library_extractor import (
     TranscriptFailure,
 )
 from transcript.model import TranscriptSegment
-from youtube_transcript_api._errors import RequestBlocked, TranscriptsDisabled
+from youtube_transcript_api._errors import IpBlocked, RequestBlocked, TranscriptsDisabled
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,16 @@ class LibraryTranscriptExtractorTests(unittest.TestCase):
         self.assertEqual(
             result,
             TranscriptExtractionResult.failed(TranscriptFailure.ACCESS_RESTRICTED),
+        )
+
+    def test_extract_preserves_an_http_429_as_rate_limited(self) -> None:
+        result = LibraryTranscriptExtractor(
+            _TranscriptApiStub(error=IpBlocked("video000001"))
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED),
         )
 
     def test_extract_reports_unexpected_errors_without_exposing_their_message(self) -> None:

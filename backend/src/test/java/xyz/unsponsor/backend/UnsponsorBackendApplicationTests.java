@@ -58,7 +58,7 @@ class UnsponsorBackendApplicationTests {
 				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("1", "2", "3", "4"), appliedVersions);
+		assertEquals(List.of("1", "2", "3", "4", "5"), appliedVersions);
 	}
 
 	@Test
@@ -154,6 +154,21 @@ class UnsponsorBackendApplicationTests {
 		assertEquals(
 				Set.of("id", "video_id", "sequence", "start_ms", "end_ms", "text", "created_at"),
 				new HashSet<>(columnNames));
+	}
+
+	@Test
+	void limitsTranscriptSourcesToCurrentCaptionPaths() {
+		List<String> sourceValues = jdbcTemplate.queryForList(
+				"""
+				SELECT column_type
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcripts'
+				  AND column_name = 'source'
+				""",
+				String.class);
+
+		assertEquals(List.of("enum('library','yt_dlp')"), sourceValues);
 	}
 
 	@Test
