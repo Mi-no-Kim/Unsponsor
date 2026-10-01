@@ -27,6 +27,13 @@ class RestrictedErrorLogTests(unittest.TestCase):
                 logger.error("Cookie: secret-cookie")
                 logger.error("Authorization=Bearer secret-token")
                 logger.error("https://example.test/?potoken=secret-potoken")
+                logger.error("PoTokenResponse(po_token='secret-snake-token')")
+                logger.error("provider returned poToken: secret-camel-token")
+                logger.error("provider generated POT: secret-pot")
+                logger.error(
+                    "https://example.test/subtitle?sig=secret-signature"
+                    "&lsig=secret-lsig&spc=secret-spc"
+                )
                 logger.error("unexpected parser detail: opaque-cookie-value")
                 for handler in logger.handlers:
                     handler.flush()
@@ -44,4 +51,10 @@ class RestrictedErrorLogTests(unittest.TestCase):
         self.assertNotIn("secret-cookie", log_contents)
         self.assertNotIn("secret-token", log_contents)
         self.assertNotIn("secret-potoken", log_contents)
+        self.assertNotIn("secret-snake-token", log_contents)
+        self.assertNotIn("secret-camel-token", log_contents)
+        self.assertNotIn("secret-pot", log_contents)
+        self.assertNotIn("secret-signature", log_contents)
+        self.assertNotIn("secret-lsig", log_contents)
+        self.assertNotIn("secret-spc", log_contents)
         self.assertNotIn("opaque-cookie-value", log_contents)

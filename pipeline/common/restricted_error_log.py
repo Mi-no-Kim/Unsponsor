@@ -9,10 +9,13 @@ from pathlib import Path
 
 _LOGGER_NAME = "unsponsor.pipeline.transcript.errors"
 _CREDENTIAL_VALUE = re.compile(
-    r"(?i)(\b(?:cookie|authorization|proxy-authorization|potoken)\s*[:=]\s*)([^\r\n]*)"
+    r"(?i)(\b(?:cookie|authorization|proxy-authorization|po[_ -]?token|pot)\b"
+    r"\s*[:=]\s*)([^\r\n]*)"
 )
 _CREDENTIAL_QUERY_PARAMETER = re.compile(
-    r"(?i)([?&](?:cookie|authorization|token|potoken|key|password)=)([^&#\s]+)"
+    r"(?i)([?&](?:access[_-]?token|authorization|cookie|key|password|token|"
+    r"po[_-]?token|pot|s|sig|signature|lsig|spc|"
+    r"x-goog-(?:credential|signature|security-token))=)([^&#\s]+)"
 )
 
 

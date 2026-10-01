@@ -19,6 +19,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     AgeRestricted,
     CouldNotRetrieveTranscript,
+    IpBlocked,
     NoTranscriptFound,
     RequestBlocked,
     TranscriptsDisabled,
@@ -78,6 +79,11 @@ class LibraryTranscriptExtractor:
                 "youtube-transcript-api request failed; video_id=%s", video_id
             )
             return TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR)
+        except IpBlocked:
+            self._error_logger.exception(
+                "youtube-transcript-api was rate limited; video_id=%s", video_id
+            )
+            return TranscriptExtractionResult.failed(TranscriptFailure.RATE_LIMITED)
         except (AgeRestricted, RequestBlocked, CouldNotRetrieveTranscript):
             self._error_logger.exception(
                 "youtube-transcript-api access was restricted; video_id=%s", video_id
