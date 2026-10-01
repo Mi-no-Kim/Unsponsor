@@ -1,9 +1,9 @@
 # Pipeline 로컬 실행
 
-## W-021: transcript 단계 통합 실행
+## W-028: yt-dlp 우선 transcript 단계 실행
 
 큐의 `transcript/pending` 작업은 아래 명령으로 처리한다. 멈춘 작업을 먼저 재시도 정책으로
-복구한 뒤, 라이브러리 → yt-dlp·PoToken 순서로 자막을 확보한다. 성공한 자막의 원문·출처·시간
+복구한 뒤, 현재 1차이자 유일한 경로인 yt-dlp·PoToken으로 자막을 확보한다. 성공한 자막의 원문·출처·시간
 세그먼트는 한 DB 트랜잭션으로 교체하고, 그 뒤에만 큐를 `identify/pending`으로 넘긴다.
 
 ```cmd
@@ -21,11 +21,15 @@
 변경하거나 삭제하지 않고, 별도 결정으로 보존 방식을 정한다.
 
 `--cookie-file`은 Netscape 형식의 레포 밖 YouTube 쿠키 파일을 `yt-dlp`에만 전달한다.
-library 경로·DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider가 준비되지 않은
+DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider가 준비되지 않은
 환경에서는 `--provider-home`을 생략할 수 있다. 이 경우 PoToken이 필요한 yt-dlp 자막은
 `po_token_required`로만 끝난다. `rate_limited_stop=1`이면 HTTP 429를 받은 현재 영상만
 안전하게 전이하고, 아직 점유하지 않은 다른 영상은 요청하지 않은 채 `pending`으로 남긴다.
-실행 요약에는 `library`·`yt_dlp` 처리 건수와 안전한 상태 수치만 출력한다.
+실행 요약에는 `yt_dlp` 처리 건수와 안전한 상태 수치만 출력한다.
+
+로컬 egress에서 IP 차단이 확인된 `youtube-transcript-api`는 Webshare를 도입하고 별도 Work에서
+효과와 보안 경계를 검증하기 전까지 현재 큐 실행에서 호출하지 않는다. 구현·의존성과 과거
+`library` 출처 행은 제거하지 않는다.
 
 외부 오류 원문·HTTP 상태·traceback은 기본값
 `%LOCALAPPDATA%\Unsponsor\logs\transcript-errors.log`에 남고 오류가 발생한 경우에만 콘솔에도
@@ -33,9 +37,9 @@ library 경로·DB·일반 실행 요약에는 전달하거나 기록하지 않�
 URL이 포함될 수 있으나, 쿠키·Authorization·Proxy-Authorization·PoToken 값과 자격 증명 query
 parameter는 마스킹한다. 자막 원문은 기록하지 않는다.
 
-32건 실제 큐 실행은 외부 자막 경로와 저장 성공을 확인하는 일회성 배치 통합 검증이다. 일상적인
-기능 변경마다 기존 큐를 비우거나 다시 처리하지 않는다. 아래 검증은 현재 로컬 MySQL의 단일
-트랜잭션 안에서 가짜 영상 7건으로 라이브러리 성공, yt-dlp 폴백, 자막 부재, 429 중단, 멈춘 행
+W-021의 32건 실제 큐 실행은 당시 라이브러리 경로와 저장 성공을 확인한 일회성 배치 통합
+기준선이다. 현재 yt-dlp 우선 경로를 확인하기 위해 기존 큐를 비우거나 재처리하지 않는다. 아래
+검증은 현재 로컬 MySQL의 단일 트랜잭션 안에서 가짜 영상으로 yt-dlp 성공, 자막 부재, 429 중단, 멈춘 행
 복구, 최신 자막·세그먼트 교체를 확인한 뒤 **항상 롤백**한다. 현재 행·자막·큐 상태는 커밋되지
 않으며 외부 YouTube에도 요청하지 않는다. MySQL의 auto-increment 값에는 작은 번호 공백이 생길 수
 있으므로, 로컬 워커를 함께 실행하지 않는 상태에서만 사용한다.

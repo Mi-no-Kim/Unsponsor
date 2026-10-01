@@ -112,25 +112,15 @@ def _verify_stage_transitions(factory: MySqlConnectionFactory) -> list[str]:
     channel_id = _insert_channel(factory)
     checks: list[str] = []
 
-    library_video = _insert_video_and_queue(factory, channel_id, "library")
+    ytdlp_video = _insert_video_and_queue(factory, channel_id, "ytdlp")
     _run_stage(
         queue,
         store,
-        _FixedExtractor(_successful_result("library")),
-        _FixedExtractor(_failed_result(TranscriptFailure.NO_TRANSCRIPT)),
+        _FixedExtractor(_successful_result("ytdlp")),
     )
-    _assert_queue_state(factory, library_video, "identify", "pending", None, 0)
-    _assert_transcript(factory, library_video, TranscriptSource.LIBRARY, 2)
-    checks.append("library_success_to_identify")
-
-    fallback_video = _insert_video_and_queue(factory, channel_id, "fallback")
-    library = _FixedExtractor(_failed_result(TranscriptFailure.ACCESS_RESTRICTED))
-    ytdlp = _FixedExtractor(_successful_result("fallback"))
-    result = _run_stage(queue, store, library, ytdlp)
-    _require(result.ytdlp_count == 1 and library.calls == 1 and ytdlp.calls == 1)
-    _assert_queue_state(factory, fallback_video, "identify", "pending", None, 0)
-    _assert_transcript(factory, fallback_video, TranscriptSource.YT_DLP, 2)
-    checks.append("ytdlp_fallback_to_identify")
+    _assert_queue_state(factory, ytdlp_video, "identify", "pending", None, 0)
+    _assert_transcript(factory, ytdlp_video, TranscriptSource.YT_DLP, 2)
+    checks.append("ytdlp_success_to_identify")
 
     no_transcript_video = _insert_video_and_queue(
         factory, channel_id, "no_transcript", attempt_count=2
@@ -138,7 +128,6 @@ def _verify_stage_transitions(factory: MySqlConnectionFactory) -> list[str]:
     _run_stage(
         queue,
         store,
-        _FixedExtractor(_failed_result(TranscriptFailure.NO_TRANSCRIPT)),
         _FixedExtractor(_failed_result(TranscriptFailure.NO_TRANSCRIPT)),
     )
     _assert_queue_state(
@@ -152,7 +141,6 @@ def _verify_stage_transitions(factory: MySqlConnectionFactory) -> list[str]:
     result = _run_stage(
         queue,
         store,
-        _FixedExtractor(_failed_result(TranscriptFailure.ACCESS_RESTRICTED)),
         _FixedExtractor(_failed_result(TranscriptFailure.RATE_LIMITED)),
     )
     _require(result.rate_limited_stop_count == 1)
@@ -199,10 +187,9 @@ def _verification_queue_settings() -> QueueSettings:
 def _run_stage(
     queue: ProcessingQueueWorker,
     store: TranscriptStore,
-    library: _TranscriptExtractor,
     ytdlp: _TranscriptExtractor,
 ):
-    return TranscriptStageRunner(queue, store, library, ytdlp).run()
+    return TranscriptStageRunner(queue, store, ytdlp).run()
 
 
 def _insert_channel(factory: MySqlConnectionFactory) -> int:
@@ -276,8 +263,7 @@ def _insert_row(
 
 def _verification_youtube_video_id(label: str) -> str:
     values = {
-        "library": "verify00001",
-        "fallback": "verify00002",
+        "ytdlp": "verify00001",
         "no_transcript": "verify00003",
         "rate_limited": "verify00004",
         "unclaimed": "verify00005",
