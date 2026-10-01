@@ -1,8 +1,40 @@
 # Pipeline 로컬 실행
 
+## W-030: DataImpulse 라이브러리 우선 transcript 큐 실행
+
+현재 `transcript/pending` 큐는 다음 순서로 처리한다.
+
+1. DataImpulse Residential Proxy가 강제된 `youtube-transcript-api`
+2. 라이브러리의 429 이외 안전한 실패에서 `yt-dlp`
+3. `yt-dlp`가 명시적으로 PoToken을 요구할 때만 on-demand Provider
+
+```cmd
+.venv\Scripts\python.exe -m transcript.stage_runner --provider-home C:\tools\bgutil-ytdlp-pot-provider\server --cookie-file "%LOCALAPPDATA%\Unsponsor\secrets\youtube-cookies.txt"
+```
+
+VS Code에서는 로컬 전용 task `Pipeline: transcript queue (library → yt-dlp → PoToken)`으로 같은
+모듈과 인자를 실행할 수 있다. `.vscode/tasks.json`은 Git 제외 대상이며 DataImpulse 비밀값을
+담지 않는다. 명령과 task 모두 큐 재설정·재등록·재처리 대상을 고르지 않고, 실행 시점에 이미
+`transcript/pending`인 항목만 기존 점유·재시도·멈춤 복구 정책으로 처리한다.
+
+DataImpulse 설정은 W-029와 같은 루트 `.env` 변수를 재사용한다. 라이브러리는 이 설정으로 만든
+전용 프록시 세션에서만 호출되고 직접 egress로 요청하지 않는다. 설정 누락·프록시 인증 실패는
+민감 원문 없이 안전한 실패로 집계한 뒤 `yt-dlp`로 폴백한다. DataImpulse 자격 증명은
+라이브러리에만 전달하고, `--cookie-file`은 `yt-dlp`에만 전달한다. `--provider-home`을 지정해도
+`yt-dlp`가 PoToken을 명시적으로 요구하기 전에는 Provider를 시작하지 않는다.
+
+어느 활성 외부 경로에서든 `rate_limited`가 나오면 현재 항목을 안전하게 전이하고, 같은 영상의
+추가 폴백·새 Provider 시작·해당 실행의 다음 큐 점유를 중단한다. 성공 결과는 실제 경로에 따라
+`video_transcripts.source`를 `library` 또는 `yt_dlp`로 저장하며, 원문과 시간 세그먼트는 기존처럼
+한 트랜잭션으로 교체한다. 실행 요약에는 두 경로의 성공·안전한 실패 건수와 큐 상태 수치만 남고,
+프록시 URL·자격 증명·영상 ID·자막 원문은 일반 출력과 제한된 오류 로그에 남지 않는다.
+
+초기 데이터셋을 다시 검사하기 위한 DB 상태 변경·재등록·초기화 기능은 제공하지 않는다. 실제
+초기 데이터셋 실행은 사용자가 DB 준비와 실행을 명시적으로 확인한 뒤에만 수행한다.
+
 ## W-029: DataImpulse Residential Proxy canary
 
-현재 큐 실행 경로를 바꾸기 전에, DataImpulse 프록시를 통한 `youtube-transcript-api`의 실제 접근과
+큐 실행 경로를 바꾸기 전에, DataImpulse 프록시를 통한 `youtube-transcript-api`의 실제 접근과
 자격 증명 마스킹을 별도로 검증한다. 이 canary는 DB·처리 큐·쿠키·yt-dlp·PoToken Provider를
 사용하지 않는다.
 
@@ -46,14 +78,15 @@ copy dataimpulse-canary.example.json dataimpulse-canary.local.json
 | `3`       | `CONDITIONAL` | 모두 성공했지만 한 건 이상이 제한된 두 번째 시도에서 회복        |
 | `2`       | `FAIL`        | 최종 실패·반복 429·설정 오류 또는 요청하지 않은 남은 항목이 있음 |
 
-`PASS`일 때만 별도 후속 Work에서 라이브러리를 현재 큐 실행 경로에 다시 넣는다. 그 전까지 W-028의
-yt-dlp 단일 경로가 Current Truth다.
+실제 canary 3건은 모두 첫 시도에 성공했고 재시도·429·접근 제한·인증 오류 없이 `PASS`였다.
+이 결과를 근거로 W-030에서 라이브러리를 현재 큐의 첫 경로로 재도입했다.
 
-## W-028: yt-dlp 우선 transcript 단계 실행
+## W-028: yt-dlp 단일 transcript 단계 전환 — 이전 기준
 
-큐의 `transcript/pending` 작업은 아래 명령으로 처리한다. 멈춘 작업을 먼저 재시도 정책으로
-복구한 뒤, 현재 1차이자 유일한 경로인 yt-dlp·PoToken으로 자막을 확보한다. 성공한 자막의 원문·출처·시간
-세그먼트는 한 DB 트랜잭션으로 교체하고, 그 뒤에만 큐를 `identify/pending`으로 넘긴다.
+W-029 검증 전에는 큐의 `transcript/pending` 작업을 yt-dlp·PoToken 단일 경로로 처리했다.
+W-030 이후 일반 실행 명령은 같지만, 현재 경로 순서는 위 W-030 절을 따른다. 성공한 자막의
+원문·출처·시간 세그먼트는 한 DB 트랜잭션으로 교체하고, 그 뒤에만 큐를 `identify/pending`으로
+넘기는 계약은 유지한다.
 
 ```cmd
 .venv\Scripts\python.exe -m transcript.stage_runner --provider-home C:\tools\bgutil-ytdlp-pot-provider\server --cookie-file "%LOCALAPPDATA%\Unsponsor\secrets\youtube-cookies.txt"
@@ -70,24 +103,22 @@ yt-dlp 단일 경로가 Current Truth다.
 변경하거나 삭제하지 않고, 별도 결정으로 보존 방식을 정한다.
 
 `--cookie-file`은 Netscape 형식의 레포 밖 YouTube 쿠키 파일을 `yt-dlp`에만 전달한다.
-DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider가 준비되지 않은
-환경에서는 `--provider-home`을 생략할 수 있다. 이 경우 PoToken이 필요한 yt-dlp 자막은
+DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider가 준비되지 않은 환경에서는
+`--provider-home`을 생략할 수 있다. 이 경우 PoToken이 필요한 yt-dlp 자막은
 `po_token_required`로만 끝난다. `rate_limited_stop=1`이면 HTTP 429를 받은 현재 영상만
 안전하게 전이하고, 아직 점유하지 않은 다른 영상은 요청하지 않은 채 `pending`으로 남긴다.
-실행 요약에는 `yt_dlp` 처리 건수와 안전한 상태 수치만 출력한다.
+현재 실행 요약에는 `library`·`yt_dlp` 경로별 성공·안전한 실패 건수와 큐 상태 수치만 출력한다.
 
-로컬 egress에서 IP 차단이 확인된 `youtube-transcript-api`는 W-029의 DataImpulse canary가
-`PASS`로 끝나고 별도 후속 Work가 실행 경로 재도입을 승인하기 전까지 현재 큐 실행에서 호출하지
-않는다. 구현·의존성과 과거 `library` 출처 행은 제거하지 않는다.
+로컬 직접 egress에서 IP 차단이 확인된 `youtube-transcript-api`는 W-029의 DataImpulse canary
+`PASS` 뒤 W-030에서 프록시 전용 경로로만 재도입했다. 직접 egress는 계속 허용하지 않는다.
 
-외부 오류 원문·HTTP 상태·traceback은 기본값
-`%LOCALAPPDATA%\Unsponsor\logs\transcript-errors.log`에 남고 오류가 발생한 경우에만 콘솔에도
-표시된다. `--error-log <경로>`로 로컬 전용 파일을 바꿀 수 있다. 이 오류 로그에는 영상 ID와
-URL이 포함될 수 있으나, 쿠키·Authorization·Proxy-Authorization·PoToken 값과 자격 증명 query
-parameter는 마스킹한다. 자막 원문은 기록하지 않는다.
+기본 제한 오류 로그는 `%LOCALAPPDATA%\Unsponsor\logs\transcript-errors.log`이며,
+`--error-log <경로>`로 로컬 전용 파일을 바꿀 수 있다. 외부 오류 원문·traceback·영상 ID·URL·자막
+원문은 기록하지 않고 구성요소명과 안전 코드만 남긴다. 쿠키·Authorization·Proxy-Authorization·
+PoToken·프록시 자격 증명은 방어적으로 계속 마스킹한다.
 
 W-021의 32건 실제 큐 실행은 당시 라이브러리 경로와 저장 성공을 확인한 일회성 배치 통합
-기준선이다. 현재 yt-dlp 우선 경로를 확인하기 위해 기존 큐를 비우거나 재처리하지 않는다. 아래
+기준선이다. 현재 자막 경로의 DB 계약을 확인하기 위해 기존 큐를 비우거나 재처리하지 않는다. 아래
 검증은 현재 로컬 MySQL의 단일 트랜잭션 안에서 가짜 영상으로 yt-dlp 성공, 자막 부재, 429 중단, 멈춘 행
 복구, 최신 자막·세그먼트 교체를 확인한 뒤 **항상 롤백**한다. 현재 행·자막·큐 상태는 커밋되지
 않으며 외부 YouTube에도 요청하지 않는다. MySQL의 auto-increment 값에는 작은 번호 공백이 생길 수

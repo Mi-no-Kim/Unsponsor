@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, Sequence
 
@@ -15,9 +15,19 @@ from collector.processing_queue_worker import (
     ProcessingQueueWorker,
     QueueFailure,
 )
-from common.config import PipelineSettings, load_settings
+from common.config import (
+    ConfigurationError,
+    DataImpulseProxySettings,
+    PipelineSettings,
+    load_dataimpulse_proxy_settings,
+    load_settings,
+)
 from common.restricted_error_log import configure_restricted_error_log
 from common.mysql import MySqlConnectionFactory
+from transcript.dataimpulse_proxy import (
+    DataImpulseLibraryTranscriptExtractor,
+    dataimpulse_proxy_secret_values,
+)
 from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSource
 from transcript.store import TranscriptStore
 from transcript.ytdlp_extractor import YtDlpTranscriptExtractor
@@ -67,71 +77,62 @@ class TranscriptPersistence(Protocol):
 class TranscriptStageRunResult:
     """콘솔에 원문·식별자 없이 표시할 실행 요약이다."""
 
+    library_count: int = 0
     ytdlp_count: int = 0
+    library_failure_count: int = 0
+    ytdlp_failure_count: int = 0
     retry_scheduled_count: int = 0
     failed_count: int = 0
     recovered_count: int = 0
     rate_limited_stop_count: int = 0
 
-    def with_success(self) -> TranscriptStageRunResult:
-        return TranscriptStageRunResult(
-            ytdlp_count=self.ytdlp_count + 1,
-            retry_scheduled_count=self.retry_scheduled_count,
-            failed_count=self.failed_count,
-            recovered_count=self.recovered_count,
-            rate_limited_stop_count=self.rate_limited_stop_count,
-        )
+    def with_success(self, source: TranscriptSource) -> TranscriptStageRunResult:
+        if source is TranscriptSource.LIBRARY:
+            return replace(self, library_count=self.library_count + 1)
+        return replace(self, ytdlp_count=self.ytdlp_count + 1)
+
+    def with_extraction_failure(
+        self, source: TranscriptSource
+    ) -> TranscriptStageRunResult:
+        if source is TranscriptSource.LIBRARY:
+            return replace(
+                self, library_failure_count=self.library_failure_count + 1
+            )
+        return replace(self, ytdlp_failure_count=self.ytdlp_failure_count + 1)
 
     def with_failure(self, transition: FailureTransition) -> TranscriptStageRunResult:
         if transition.status == "pending":
-            return TranscriptStageRunResult(
-                ytdlp_count=self.ytdlp_count,
-                retry_scheduled_count=self.retry_scheduled_count + 1,
-                failed_count=self.failed_count,
-                recovered_count=self.recovered_count,
-                rate_limited_stop_count=self.rate_limited_stop_count,
+            return replace(
+                self, retry_scheduled_count=self.retry_scheduled_count + 1
             )
-        return TranscriptStageRunResult(
-            ytdlp_count=self.ytdlp_count,
-            retry_scheduled_count=self.retry_scheduled_count,
-            failed_count=self.failed_count + 1,
-            recovered_count=self.recovered_count,
-            rate_limited_stop_count=self.rate_limited_stop_count,
-        )
+        return replace(self, failed_count=self.failed_count + 1)
 
     def with_recovery(self) -> TranscriptStageRunResult:
-        return TranscriptStageRunResult(
-            ytdlp_count=self.ytdlp_count,
-            retry_scheduled_count=self.retry_scheduled_count,
-            failed_count=self.failed_count,
-            recovered_count=self.recovered_count + 1,
-            rate_limited_stop_count=self.rate_limited_stop_count,
-        )
+        return replace(self, recovered_count=self.recovered_count + 1)
 
     def with_rate_limited_stop(self) -> TranscriptStageRunResult:
         """현재 실행이 HTTP 429에 도달해 이후 큐 점유를 중단했음을 표시한다."""
 
-        return TranscriptStageRunResult(
-            ytdlp_count=self.ytdlp_count,
-            retry_scheduled_count=self.retry_scheduled_count,
-            failed_count=self.failed_count,
-            recovered_count=self.recovered_count,
-            rate_limited_stop_count=self.rate_limited_stop_count + 1,
+        return replace(
+            self, rate_limited_stop_count=self.rate_limited_stop_count + 1
         )
 
 
 class TranscriptStageRunner:
-    """현재 PH-1의 단일 yt-dlp 경로로 transcript 큐를 처리한다."""
+    """DataImpulse 라이브러리 뒤 yt-dlp로 transcript 큐를 처리한다."""
 
     def __init__(
         self,
         queue: TranscriptQueue,
         persistence: TranscriptPersistence,
         ytdlp_extractor: TranscriptExtractor,
+        *,
+        library_extractor: TranscriptExtractor | None = None,
         error_logger: logging.Logger | None = None,
     ) -> None:
         self._queue = queue
         self._persistence = persistence
+        self._library_extractor = library_extractor
         self._ytdlp_extractor = ytdlp_extractor
         self._error_logger = error_logger
 
@@ -154,7 +155,7 @@ class TranscriptStageRunner:
         try:
             youtube_video_id = self._persistence.find_youtube_video_id(job.video_id)
         except Exception:
-            self._log_exception("could not read queued video's YouTube ID")
+            self._log_safe_error("could not read queued video's YouTube ID")
             return (
                 self._record_failure(result, job, TranscriptFailure.TRANSIENT_ERROR),
                 False,
@@ -165,35 +166,82 @@ class TranscriptStageRunner:
                 False,
             )
 
-        extraction_result = self._extract(youtube_video_id)
-        if not extraction_result.is_success:
-            return (
-                self._record_failure(result, job, extraction_result.failure),
-                extraction_result.failure is TranscriptFailure.RATE_LIMITED,
+        library_result = self._extract_library(youtube_video_id)
+        if library_result.is_success:
+            return self._persist_success(
+                result,
+                job,
+                TranscriptSource.LIBRARY,
+                library_result,
             )
 
+        result = result.with_extraction_failure(TranscriptSource.LIBRARY)
+        if library_result.failure is TranscriptFailure.RATE_LIMITED:
+            return (
+                self._record_failure(result, job, library_result.failure),
+                True,
+            )
+
+        ytdlp_result = self._extract_ytdlp(youtube_video_id)
+        if not ytdlp_result.is_success:
+            result = result.with_extraction_failure(TranscriptSource.YT_DLP)
+            return (
+                self._record_failure(result, job, ytdlp_result.failure),
+                ytdlp_result.failure is TranscriptFailure.RATE_LIMITED,
+            )
+        return self._persist_success(
+            result,
+            job,
+            TranscriptSource.YT_DLP,
+            ytdlp_result,
+        )
+
+    def _persist_success(
+        self,
+        result: TranscriptStageRunResult,
+        job: ClaimedTranscriptJob,
+        source: TranscriptSource,
+        extraction_result: TranscriptExtractionResult,
+    ) -> tuple[TranscriptStageRunResult, bool]:
         try:
             self._persistence.replace_success(
-                job.video_id, TranscriptSource.YT_DLP, extraction_result
+                job.video_id, source, extraction_result
             )
             self._queue.complete_transcript(job)
         except Exception:
-            self._log_exception("could not persist a successful transcript")
+            self._log_safe_error("could not persist a successful transcript")
             return (
                 self._record_failure(result, job, TranscriptFailure.TRANSIENT_ERROR),
                 False,
             )
-        return result.with_success(), False
+        return result.with_success(source), False
 
-    def _log_exception(self, message: str) -> None:
+    def _log_safe_error(self, message: str) -> None:
         if self._error_logger is not None:
-            self._error_logger.exception(message)
+            self._error_logger.error(message)
 
-    def _extract(self, youtube_video_id: str) -> TranscriptExtractionResult:
+    def _extract_library(self, youtube_video_id: str) -> TranscriptExtractionResult:
+        if self._library_extractor is None:
+            return TranscriptExtractionResult.failed(
+                TranscriptFailure.TRANSIENT_ERROR
+            )
+        try:
+            return self._library_extractor.extract(youtube_video_id)
+        except Exception:
+            self._log_safe_error(
+                "DataImpulse library extractor raised an unexpected error"
+            )
+            return TranscriptExtractionResult.failed(
+                TranscriptFailure.TRANSIENT_ERROR
+            )
+
+    def _extract_ytdlp(self, youtube_video_id: str) -> TranscriptExtractionResult:
         try:
             return self._ytdlp_extractor.extract(youtube_video_id)
         except Exception:
-            self._log_exception("yt-dlp transcript extractor raised an unexpected error")
+            self._log_safe_error(
+                "yt-dlp transcript extractor raised an unexpected error"
+            )
             return TranscriptExtractionResult.failed(
                 TranscriptFailure.TRANSIENT_ERROR
             )
@@ -212,6 +260,7 @@ class TranscriptStageRunner:
 def run_transcript_stage(
     settings: PipelineSettings,
     *,
+    dataimpulse_settings: DataImpulseProxySettings | None = None,
     provider_home: Path | None = None,
     cookie_file: Path | None = None,
     error_logger: logging.Logger | None = None,
@@ -219,6 +268,14 @@ def run_transcript_stage(
     """설정된 로컬 DB에서 transcript 단계 실행기를 구성해 실행한다."""
 
     connection_factory = MySqlConnectionFactory(settings.mysql)
+    library_extractor = (
+        DataImpulseLibraryTranscriptExtractor(
+            dataimpulse_settings,
+            error_logger=error_logger,
+        )
+        if dataimpulse_settings is not None
+        else None
+    )
     return TranscriptStageRunner(
         ProcessingQueueWorker(connection_factory, settings.queue),
         TranscriptStore(connection_factory),
@@ -227,6 +284,7 @@ def run_transcript_stage(
             cookie_file=cookie_file,
             error_logger=error_logger,
         ),
+        library_extractor=library_extractor,
         error_logger=error_logger,
     ).run()
 
@@ -234,7 +292,10 @@ def run_transcript_stage(
 def _print_summary(result: TranscriptStageRunResult) -> None:
     print(
         "Transcript summary: "
+        f"library={result.library_count}, "
         f"yt_dlp={result.ytdlp_count}, "
+        f"library_failures={result.library_failure_count}, "
+        f"yt_dlp_failures={result.ytdlp_failure_count}, "
         f"retry_scheduled={result.retry_scheduled_count}, "
         f"failed={result.failed_count}, "
         f"recovered={result.recovered_count}, "
@@ -275,12 +336,23 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     pipeline_root = Path(__file__).resolve().parents[1]
     settings = load_settings(pipeline_root.parent, pipeline_root / "channels.local.json")
+    try:
+        dataimpulse_settings = load_dataimpulse_proxy_settings(pipeline_root.parent)
+    except ConfigurationError:
+        dataimpulse_settings = None
     error_logger = configure_restricted_error_log(
-        arguments.error_log, cookie_file=arguments.cookie_file
+        arguments.error_log,
+        cookie_file=arguments.cookie_file,
+        secret_values=(
+            dataimpulse_proxy_secret_values(dataimpulse_settings)
+            if dataimpulse_settings is not None
+            else ()
+        ),
     )
     _print_summary(
         run_transcript_stage(
             settings,
+            dataimpulse_settings=dataimpulse_settings,
             provider_home=arguments.provider_home,
             cookie_file=arguments.cookie_file,
             error_logger=error_logger,

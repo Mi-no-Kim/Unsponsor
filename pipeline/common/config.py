@@ -39,7 +39,7 @@ class QueueSettings:
 
 @dataclass(frozen=True)
 class DataImpulseProxySettings:
-    """DataImpulse canary에만 쓰는 레포 밖 프록시 자격 증명이다."""
+    """DataImpulse 라이브러리 경로에만 쓰는 레포 밖 프록시 자격 증명이다."""
 
     username: str = field(repr=False)
     password: str = field(repr=False)
@@ -137,7 +137,7 @@ def load_dataimpulse_proxy_settings(
     *,
     environment: Mapping[str, str] | None = None,
 ) -> DataImpulseProxySettings:
-    """루트 ``.env``와 프로세스 환경에서 canary 프록시 설정을 읽는다."""
+    """루트 ``.env``와 프로세스 환경에서 라이브러리 프록시 설정을 읽는다."""
 
     values = _read_dotenv(Path(repository_root) / ".env")
     values.update(os.environ if environment is None else environment)

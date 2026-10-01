@@ -13,24 +13,21 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import quote
-
-from requests import Session
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import GenericProxyConfig
-
 from common.config import (
     ConfigurationError,
     DataImpulseProxySettings,
     load_dataimpulse_proxy_settings,
 )
 from common.restricted_error_log import configure_restricted_error_log
-from transcript.library_extractor import LibraryTranscriptExtractor
+from transcript.dataimpulse_proxy import (
+    DataImpulseLibrarySession,
+    create_dataimpulse_library_session,
+    dataimpulse_proxy_secret_values,
+    dataimpulse_proxy_url,
+)
 from transcript.model import TranscriptExtractionResult, TranscriptFailure
 
 
-_DATAIMPULSE_HOST = "gw.dataimpulse.com"
-_DATAIMPULSE_ROTATING_HTTP_PORT = 823
 _DEFAULT_LANGUAGE_CODES = ("ko", "en")
 _MAX_ATTEMPTS_PER_VIDEO = 2
 _MIN_VIDEO_COUNT = 3
@@ -174,8 +171,8 @@ class DataImpulseCanary:
                 )
             except Exception:
                 if self._error_logger is not None:
-                    self._error_logger.exception(
-                        "DataImpulse canary attempt raised an unexpected error"
+                    self._error_logger.error(
+                        "DataImpulse canary attempt failed safely"
                     )
                 final_result = TranscriptExtractionResult.failed(
                     TranscriptFailure.TRANSIENT_ERROR
@@ -186,8 +183,8 @@ class DataImpulseCanary:
                         attempt.close()
                     except Exception:
                         if self._error_logger is not None:
-                            self._error_logger.exception(
-                                "DataImpulse canary could not close its HTTP session"
+                            self._error_logger.error(
+                                "DataImpulse canary session could not be closed safely"
                             )
 
             if final_result.is_success or final_result.failure not in _RETRYABLE_FAILURES:
@@ -216,59 +213,22 @@ class DataImpulseCanary:
         )
 
 
-class _LibraryCanaryAttempt:
-    def __init__(
-        self, session: Session, extractor: LibraryTranscriptExtractor
-    ) -> None:
-        self._session = session
-        self._extractor = extractor
-
-    def extract(
-        self, video_id: str, *, language_codes: Sequence[str]
-    ) -> TranscriptExtractionResult:
-        return self._extractor.extract(video_id, language_codes=language_codes)
-
-    def close(self) -> None:
-        self._session.close()
-
-
 def _create_attempt(
     settings: DataImpulseProxySettings,
     error_logger: logging.Logger | None,
-) -> _LibraryCanaryAttempt:
-    session = Session()
-    session.trust_env = False
-    api = YouTubeTranscriptApi(
-        proxy_config=GenericProxyConfig(http_url=_proxy_url(settings)),
-        http_client=session,
-    )
-    return _LibraryCanaryAttempt(
-        session,
-        LibraryTranscriptExtractor(api, error_logger=error_logger),
+) -> DataImpulseLibrarySession:
+    return create_dataimpulse_library_session(
+        settings,
+        error_logger,
     )
 
 
 def _proxy_url(settings: DataImpulseProxySettings) -> str:
-    targeted_username = (
-        f"{settings.username}__cr.{settings.country_code}"
-    )
-    return (
-        f"http://{quote(targeted_username, safe='')}:{quote(settings.password, safe='')}"
-        f"@{_DATAIMPULSE_HOST}:{_DATAIMPULSE_ROTATING_HTTP_PORT}"
-    )
+    return dataimpulse_proxy_url(settings)
 
 
 def _proxy_secret_values(settings: DataImpulseProxySettings) -> tuple[str, ...]:
-    targeted_username = f"{settings.username}__cr.{settings.country_code}"
-    return (
-        settings.username,
-        settings.password,
-        targeted_username,
-        quote(settings.username, safe=""),
-        quote(settings.password, safe=""),
-        quote(targeted_username, safe=""),
-        _proxy_url(settings),
-    )
+    return dataimpulse_proxy_secret_values(settings)
 
 
 def _load_video_ids(path: Path) -> tuple[str, ...]:

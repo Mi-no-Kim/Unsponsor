@@ -172,6 +172,21 @@ class DataImpulseCanaryTests(unittest.TestCase):
         finally:
             attempt.close()
 
+    def test_library_proxy_session_has_no_cookie_input_or_direct_egress(self) -> None:
+        attempt = _create_attempt(self.settings, None)
+        try:
+            self.assertFalse(attempt._session.trust_env)
+            self.assertEqual(
+                attempt._session.proxies,
+                {
+                    "http": _proxy_url(self.settings),
+                    "https": _proxy_url(self.settings),
+                },
+            )
+            self.assertFalse(hasattr(attempt, "cookie_file"))
+        finally:
+            attempt.close()
+
     def test_video_file_requires_three_to_five_unique_valid_ids(self) -> None:
         for payload, message in (
             ({"video_ids": list(VIDEO_IDS[:2])}, "between 3 and 5"),

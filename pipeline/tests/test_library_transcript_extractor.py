@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import StringIO
+import logging
 import unittest
 
 from transcript.library_extractor import (
@@ -97,6 +99,40 @@ class LibraryTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
         )
         self.assertNotIn("private transcript contents", repr(result))
+
+    def test_extract_omits_identifiers_transcript_and_proxy_secrets_from_error_log(self) -> None:
+        captured = StringIO()
+        logger = logging.getLogger(self.id())
+        logger.setLevel(logging.ERROR)
+        logger.propagate = False
+        handler = logging.StreamHandler(captured)
+        logger.addHandler(handler)
+        try:
+            result = LibraryTranscriptExtractor(
+                _TranscriptApiStub(
+                    error=RuntimeError(
+                        "video000001 private transcript "
+                        "http://private-login:private-password@gw.dataimpulse.com"
+                    )
+                ),
+                error_logger=logger,
+            ).extract("video000001")
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.TRANSIENT_ERROR),
+        )
+        self.assertIn("raised an unexpected error", captured.getvalue())
+        for private_value in (
+            "video000001",
+            "private transcript",
+            "private-login",
+            "private-password",
+        ):
+            self.assertNotIn(private_value, captured.getvalue())
 
     def test_extract_rejects_an_empty_or_malformed_response_without_exposing_it(self) -> None:
         for response in ((), (_Snippet("  \n  ", 0.0, 1.0),), object()):
