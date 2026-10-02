@@ -1,5 +1,30 @@
 # Pipeline 로컬 실행
 
+## W-033: LLM 1차 입출력·검증 계약
+
+`summarizer.identification_model`은 제품 식별·중간 광고 탐지·제품별 협찬 판정이 공유하는
+입출력 모델이다. 입력은 `title`, `description`, `has_paid_product_placement`,
+`transcript_segments`를 가지며, 설명란과 유료 광고 표시를 알 수 없으면 각각 `null`을 그대로
+유지한다. `false`로 대신 채우지 않는다. 자막 세그먼트는 I-003의 `sequence`, `start_ms`,
+`end_ms`, `text` 계약을 그대로 쓰고 비어 있거나 순서·타임라인이 잘못된 입력은 거부한다.
+
+출력의 `products`에는 `original_name`, 브랜드·시리즈·제품 `markers`, `role`,
+`is_sponsored_review`가 모두 있어야 한다. 마커 상태는 다음처럼 구분한다.
+
+- `complete`: 세 마커가 모두 있고 자동 매칭 키로 사용할 수 있다.
+- `incomplete`: 하나 이상을 알 수 없어 해당 마커를 `null`로 둔다.
+- `uncertain`: 하나 이상의 후보 값은 있지만 확정할 수 없어 자동 매칭에 쓰지 않는다.
+
+누락되거나 불확실한 마커를 추정해서 채우지 않으며, 역할과 협찬 판정은 `null`이나 기본값을
+허용하지 않는다. 한 영상의 동일 제품은 한 번만 출력해야 한다. 정규화한 원문 표기가 같거나 세
+마커 후보가 모두 같으면 중복으로 거부한다. `primary`는 하나 이상이어야 하지만 정면 비교 영상은
+여러 제품이 `primary`여도 정상이다. 광고가 없으면 `ad_segments`는 빈 배열이다.
+
+광고 시각은 자막과 같은 정수 밀리초의 반개방 구간 `[start_ms, end_ms)`로 받으며,
+`0 <= start_ms < end_ms <= transcript_end_ms`여야 한다. 구간은 시간순·비중첩이어야 하고 검증기가
+정렬하거나 자막 범위로 보정하지 않는다. 기존 `ad_segments`의 정수 초로 저장할 때는 탐지 구간을
+모두 덮도록 시작을 내림(`start_ms // 1000`), 끝을 올림(`ceil(end_ms / 1000)`)한다.
+
 ## W-031: 자막 저장 압축·중복 제거
 
 자막 성공 결과는 `video_transcripts` 한 행의 `gzip_json_v1` payload로 저장한다. 압축 전 계약은
