@@ -32,6 +32,66 @@ DataImpulse 설정은 W-029와 같은 루트 `.env` 변수를 재사용한다. �
 초기 데이터셋을 다시 검사하기 위한 DB 상태 변경·재등록·초기화 기능은 제공하지 않는다. 실제
 초기 데이터셋 실행은 사용자가 DB 준비와 실행을 명시적으로 확인한 뒤에만 수행한다.
 
+## W-027: 실제 API·yt-dlp fixture 기반 폐기형 DB 내구성 검증
+
+W-021의 개발 DB 롤백 검증은 더 이상 사용하지 않는다. W-027은 레포 밖의 실제
+`youtube-transcript-api` 성공 결과와 실제 yt-dlp JSON3 자막 응답 본문을 각각 현재 생산 정규화
+코드로 읽고, 현재 `TranscriptStageRunner`·Queue·Store가 실행마다 새로 만드는 MySQL 8.4에 실제
+commit한 결과를 매번 새 연결로 조회한다. 개발 DB와 기존 32건은 읽거나 수정하거나 재처리하지
+않는다.
+
+fixture 기본 위치는 `%LOCALAPPDATA%\Unsponsor\fixtures\transcript-w027`이다. 이 디렉터리에는
+API가 반환한 `text`·`start`·`duration`만 compact JSON으로 담은 `api-success.json`, 실제
+`yt-dlp-success.json3`, 두 파일의 고정 이름·형식·SHA-256만 담은 `manifest.json`을 둔다. API의
+전송 계층 원문, 영상 ID, URL과 자격 증명은 저장하지 않는다. 실제 영상 ID 한 건은 별도의 레포 밖
+선택 파일에 다음 형태로 보관하며, manifest·명령 출력·Git에는 복사하지 않는다.
+
+```json
+{ "video_id": "<11자리 영상 ID>" }
+```
+
+자막 품질을 유지하는 범위에서 API는 `ko`, `en` 우선순위 중 실제 선택된 한 언어의 결과만 받고,
+fixture에는 현재 생산 코드가 쓰는 세 필드만 공백 없는 JSON으로 저장한다. API의
+`preserve_formatting=False`는 내려받은 응답의 파싱 방식일 뿐 전송량을 줄이는 옵션은 아니다.
+yt-dlp는 기존 생산 설정대로 `skip_download`, 단일 언어 요청, `json3`, 자동 번역 제외를 사용해
+영상·오디오와 불필요한 번역 자막을 받지 않는다. JSON3를 다른 형식으로 바꾸거나 필드를 제거하면
+생산 정규화기 입력과 타임라인 충실도가 달라질 수 있으므로 W-027에서는 더 축소하지 않는다.
+
+fixture가 없다면 아래 수집 명령을 한 번 명시적으로 실행한다. 이 명령은 먼저 현재 DataImpulse
+프록시가 강제된 `youtube-transcript-api`로 성공 결과 한 건을 받고, 이어서 외부 YouTube에
+yt-dlp 자막 요청을 보낸다. API에서 429가 나오면 yt-dlp를 시작하지 않는다. `--provider-home`을
+지정한 경우에만 yt-dlp의 명시적 PoToken 요구 뒤 loopback Provider를 시작할 수 있고,
+`--cookie-file`은 기존 yt-dlp 경로에만 전달한다. 기존 fixture 또는 완성된 manifest는 덮어쓰지
+않는다.
+
+```cmd
+.venv\Scripts\python.exe -m scripts.capture_transcript_fixtures --selection-file "%LOCALAPPDATA%\Unsponsor\fixtures\transcript-w027-source-selection.json" --fixture-dir "%LOCALAPPDATA%\Unsponsor\fixtures\transcript-w027" --confirm-external-request
+```
+
+필요한 경우 같은 명령에 `--provider-home <빌드된 server 디렉터리>`와
+`--cookie-file <레포 밖 Netscape 쿠키 파일>`을 추가한다. 성공·실패 출력에는 안전 코드와 소요
+시간만 남고 선택 영상 ID, 자막 원문, URL, 쿠키 경로·내용, 외부 오류 원문과 traceback은 남지
+않는다. `no_transcript`와 `rate_limited`용 파일은 만들지 않는다.
+
+오프라인 DB 검증은 다음처럼 별도로 실행한다.
+
+```cmd
+.venv\Scripts\python.exe -m scripts.verify_transcript_stage_db --fixture-dir "%LOCALAPPDATA%\Unsponsor\fixtures\transcript-w027" --confirm-disposable-database
+```
+
+검증기는 Windows named pipe 또는 로컬 Unix socket Docker context만 허용한다. 무작위 자격 증명과
+`127.0.0.1` 임시 포트, `/var/lib/mysql` tmpfs를 쓰는 label이 지정된 `mysql:8.4` 컨테이너를
+만들며 Docker volume은 만들거나 연결하지 않는다. backend Gradle wrapper를 비웹 모드로 실행해
+Flyway V1~V5를 적용한 뒤 실제 API 성공, 실제 JSON3 성공, 안전한 `no_transcript`, 멈춘
+`processing` 복구, 두 실제 fixture 사이의 자막·세그먼트 원자 교체, `rate_limited` 배치 중단을
+실제 commit과 새 연결에서 확인한다. yt-dlp 성공 검증의 라이브러리 단계에는 외부 요청 없는 안전
+결과 test double을 사용하며 W-030의 프록시·폴백 정책은 다시 검증하지 않는다.
+
+성공·실패와 관계없이 검증기가 만든 정확한 W-027 컨테이너만 정리한다. 성공 출력은 전체 상태,
+안전한 검증 항목 이름, fixture load·DB start·Flyway·DB checks·cleanup 단계별 소요 시간만
+포함한다. 비공개 fixture 공급 체계가 없으므로 실제 Docker 통합 검증은 GitHub Actions에서
+실행하지 않는다.
+
 ## W-029: DataImpulse Residential Proxy canary
 
 큐 실행 경로를 바꾸기 전에, DataImpulse 프록시를 통한 `youtube-transcript-api`의 실제 접근과
@@ -118,18 +178,8 @@ DB·일반 실행 요약에는 전달하거나 기록하지 않는다. Provider�
 PoToken·프록시 자격 증명은 방어적으로 계속 마스킹한다.
 
 W-021의 32건 실제 큐 실행은 당시 라이브러리 경로와 저장 성공을 확인한 일회성 배치 통합
-기준선이다. 현재 자막 경로의 DB 계약을 확인하기 위해 기존 큐를 비우거나 재처리하지 않는다. 아래
-검증은 현재 로컬 MySQL의 단일 트랜잭션 안에서 가짜 영상으로 yt-dlp 성공, 자막 부재, 429 중단, 멈춘 행
-복구, 최신 자막·세그먼트 교체를 확인한 뒤 **항상 롤백**한다. 현재 행·자막·큐 상태는 커밋되지
-않으며 외부 YouTube에도 요청하지 않는다. MySQL의 auto-increment 값에는 작은 번호 공백이 생길 수
-있으므로, 로컬 워커를 함께 실행하지 않는 상태에서만 사용한다.
-
-```cmd
-.venv\Scripts\python.exe -m scripts.verify_transcript_stage_db --confirm-rollback-transaction
-```
-
-이 명령은 설정된 MySQL 호스트가 loopback이 아니면 중단하며, 결과에는 영상 ID·자막 원문을
-출력하지 않는다.
+기준선이다. 현재 자막 경로의 DB 계약을 확인하기 위해 기존 큐를 비우거나 재처리하지 않는다.
+현재 내구성 검증 명령과 데이터 경계는 위 W-027 절을 따른다.
 
 ## W-025: HTTP 429 안전한 폴백 계약
 

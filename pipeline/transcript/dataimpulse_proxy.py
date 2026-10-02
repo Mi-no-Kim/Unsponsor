@@ -85,6 +85,18 @@ def create_dataimpulse_library_session(
 ) -> DataImpulseLibrarySession:
     """환경 프록시를 무시하고 DataImpulse만 쓰는 라이브러리 세션을 만든다."""
 
+    session, api = create_dataimpulse_api(settings)
+    return DataImpulseLibrarySession(
+        session,
+        LibraryTranscriptExtractor(api, error_logger=error_logger),
+    )
+
+
+def create_dataimpulse_api(
+    settings: DataImpulseProxySettings,
+) -> tuple[Session, YouTubeTranscriptApi]:
+    """환경 프록시를 무시하는 API와 수명 관리용 HTTP 세션을 함께 만든다."""
+
     session = Session()
     session.trust_env = False
     try:
@@ -95,10 +107,7 @@ def create_dataimpulse_library_session(
     except Exception:
         session.close()
         raise
-    return DataImpulseLibrarySession(
-        session,
-        LibraryTranscriptExtractor(api, error_logger=error_logger),
-    )
+    return session, api
 
 
 def dataimpulse_proxy_url(settings: DataImpulseProxySettings) -> str:
