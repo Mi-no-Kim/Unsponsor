@@ -17,6 +17,7 @@ from transcript.model import (
     TranscriptSource,
 )
 from transcript.stage_runner import TranscriptStageRunner, _print_summary
+from transcript.store import TranscriptClaimLostError
 
 
 class TranscriptStageRunnerTests(unittest.TestCase):
@@ -35,8 +36,10 @@ class TranscriptStageRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.library_count, 1)
         self.assertEqual(result.ytdlp_count, 0)
-        self.assertEqual(persistence.saved, [(101, TranscriptSource.LIBRARY, _success())])
-        self.assertEqual(queue.completed, [ClaimedTranscriptJob(1, 101, 0)])
+        self.assertEqual(
+            persistence.saved,
+            [(ClaimedTranscriptJob(1, 101, 0), TranscriptSource.LIBRARY, _success())],
+        )
         self.assertEqual(library.calls, ["video000001"])
         self.assertEqual(ytdlp.calls, [])
 
@@ -56,7 +59,10 @@ class TranscriptStageRunnerTests(unittest.TestCase):
         self.assertEqual(result.library_count, 0)
         self.assertEqual(result.library_failure_count, 1)
         self.assertEqual(result.ytdlp_count, 1)
-        self.assertEqual(persistence.saved, [(101, TranscriptSource.YT_DLP, _success())])
+        self.assertEqual(
+            persistence.saved,
+            [(ClaimedTranscriptJob(1, 101, 0), TranscriptSource.YT_DLP, _success())],
+        )
         self.assertEqual(library.calls, ["video000001"])
         self.assertEqual(ytdlp.calls, ["video000001"])
 
@@ -127,7 +133,6 @@ class TranscriptStageRunnerTests(unittest.TestCase):
         self.assertEqual(result.ytdlp_failure_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 2), "rate_limited")])
         self.assertEqual(persistence.saved, [])
-        self.assertEqual(queue.completed, [])
 
     def test_rate_limit_stops_the_batch_without_claiming_another_video(self) -> None:
         first_job = ClaimedTranscriptJob(1, 101, 0)
@@ -148,7 +153,6 @@ class TranscriptStageRunnerTests(unittest.TestCase):
         self.assertEqual(result.rate_limited_stop_count, 1)
         self.assertEqual(result.retry_scheduled_count, 1)
         self.assertEqual(queue.failures, [(first_job, "rate_limited")])
-        self.assertEqual(queue.completed, [])
         self.assertEqual(ytdlp.calls, ["video000001"])
         self.assertEqual(queue.remaining_jobs, [second_job])
 
@@ -183,7 +187,26 @@ class TranscriptStageRunnerTests(unittest.TestCase):
 
         self.assertEqual(result.retry_scheduled_count, 1)
         self.assertEqual(queue.failures, [(ClaimedTranscriptJob(1, 101, 0), "transient_error")])
-        self.assertEqual(queue.completed, [])
+
+    def test_discards_a_success_when_the_worker_has_lost_its_claim(self) -> None:
+        job = ClaimedTranscriptJob(1, 101, 0)
+        queue = _Queue([job])
+        persistence = _Persistence(
+            {101: "video000001"},
+            storage_error=TranscriptClaimLostError("claim changed"),
+        )
+
+        result = TranscriptStageRunner(
+            queue,
+            persistence,
+            _Extractor(_success()),
+        ).run()
+
+        self.assertEqual(result.library_count, 0)
+        self.assertEqual(result.ytdlp_count, 0)
+        self.assertEqual(result.retry_scheduled_count, 0)
+        self.assertEqual(queue.failures, [])
+        self.assertEqual(persistence.saved, [])
 
     def test_missing_video_metadata_never_starts_an_extractor(self) -> None:
         queue = _Queue([ClaimedTranscriptJob(1, 101, 0)], failure_status="failed")
@@ -251,7 +274,6 @@ class _Queue:
         self._jobs = jobs.copy()
         self._failure_status = failure_status
         self._recovery_count = recovery_count
-        self.completed: list[ClaimedTranscriptJob] = []
         self.failures: list[tuple[ClaimedTranscriptJob, str]] = []
 
     @property
@@ -260,9 +282,6 @@ class _Queue:
 
     def claim_next_transcript(self) -> ClaimedTranscriptJob | None:
         return self._jobs.pop(0) if self._jobs else None
-
-    def complete_transcript(self, job: ClaimedTranscriptJob) -> None:
-        self.completed.append(job)
 
     def fail_transcript(
         self, job: ClaimedTranscriptJob, failure: QueueFailure
@@ -289,7 +308,7 @@ class _Persistence:
         self._storage_error = storage_error
         self._lookup_error = lookup_error
         self.saved: list[
-            tuple[int, TranscriptSource, TranscriptExtractionResult]
+            tuple[ClaimedTranscriptJob, TranscriptSource, TranscriptExtractionResult]
         ] = []
 
     def find_youtube_video_id(self, video_id: int) -> str | None:
@@ -297,15 +316,15 @@ class _Persistence:
             raise self._lookup_error
         return self._video_ids.get(video_id)
 
-    def replace_success(
+    def complete_success(
         self,
-        video_id: int,
+        job: ClaimedTranscriptJob,
         source: TranscriptSource,
         result: TranscriptExtractionResult,
     ) -> None:
         if self._storage_error is not None:
             raise self._storage_error
-        self.saved.append((video_id, source, result))
+        self.saved.append((job, source, result))
 
 
 class _Extractor:
