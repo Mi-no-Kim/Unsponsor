@@ -9,15 +9,22 @@ import socket
 import subprocess
 import tempfile
 import time
+import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import ContextManager, Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
 
 from common.restricted_error_log import transcript_error_logger
-from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSegment
+from transcript.model import (
+    TranscriptExtractionResult,
+    TranscriptFailure,
+    TranscriptSegment,
+    normalize_segment_text,
+)
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
@@ -30,6 +37,8 @@ _PO_TOKEN_SIGNAL = re.compile(r"(?i)\bpo[\s_-]?token\b")
 _RATE_LIMIT_SIGNAL = re.compile(
     r"(?i)(?:http(?:\s+error)?\s*429|\b429\b.*too many requests|too many requests)"
 )
+_MAX_SUBTITLE_BYTES = 64 * 1024 * 1024
+_MAX_TIMESTAMP_MS = 4_294_967_295
 
 
 class _YtDlp(Protocol):
@@ -329,7 +338,9 @@ class YtDlpTranscriptExtractor:
                 )
                 return TranscriptExtractionResult.failed(failure)
 
-            subtitle_files = tuple(output_directory.glob("*.json3"))
+            srv1_files = tuple(output_directory.glob("*.srv1"))
+            json3_files = tuple(output_directory.glob("*.json3"))
+            subtitle_files = srv1_files or json3_files
             if not subtitle_files:
                 if ytdlp_logger.failure_hint is not None:
                     return TranscriptExtractionResult.failed(
@@ -341,7 +352,7 @@ class YtDlpTranscriptExtractor:
 
             try:
                 return TranscriptExtractionResult.succeeded(
-                    _normalize_json3(subtitle_files[0])
+                    _normalize_subtitle_file(subtitle_files[0])
                 )
             except (
                 OSError,
@@ -349,8 +360,10 @@ class YtDlpTranscriptExtractor:
                 json.JSONDecodeError,
                 ValueError,
                 TypeError,
+                ElementTree.ParseError,
+                InvalidOperation,
             ):
-                self._error_logger.error("yt-dlp wrote an invalid JSON3 subtitle")
+                self._error_logger.error("yt-dlp wrote an invalid subtitle")
                 return TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE)
 
 
@@ -363,7 +376,7 @@ def _yt_dlp_options(
     cookie_file: Path | None,
     ytdlp_logger: _YtDlpErrorLogger,
 ) -> dict[str, object]:
-    """수동·원본 자동 자막만 느리고 제한된 요청으로 JSON3에 기록한다."""
+    """수동·원본 자동 자막만 느리고 제한된 요청으로 srv1 우선 기록한다."""
 
     options: dict[str, object] = {
         "skip_download": True,
@@ -371,7 +384,7 @@ def _yt_dlp_options(
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": [language_code],
-        "subtitlesformat": "json3",
+        "subtitlesformat": "srv1/json3",
         "retries": 0,
         "extractor_retries": 0,
         "fragment_retries": 0,
@@ -474,6 +487,7 @@ def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:
         raise ValueError("JSON3 subtitle payload has no events")
 
     normalized_events: list[TranscriptSegment] = []
+    previous_start_ms = -1
     for event in payload["events"]:
         if not isinstance(event, dict):
             raise ValueError("JSON3 subtitle event is invalid")
@@ -493,7 +507,11 @@ def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:
             continue
         start_ms = _json3_milliseconds(event.get("tStartMs"))
         duration_ms = _json3_milliseconds(event.get("dDurationMs"))
-        if duration_ms <= 0:
+        if (
+            duration_ms <= 0
+            or start_ms < previous_start_ms
+            or start_ms + duration_ms > _MAX_TIMESTAMP_MS
+        ):
             raise ValueError("JSON3 subtitle event duration must be positive")
         normalized_events.append(
             TranscriptSegment(
@@ -503,14 +521,92 @@ def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:
                 text=normalized_text,
             )
         )
+        previous_start_ms = start_ms
 
     if not normalized_events:
         raise ValueError("JSON3 subtitle payload contains no text")
     return tuple(normalized_events)
 
 
+def _normalize_subtitle_file(path: Path) -> tuple[TranscriptSegment, ...]:
+    if path.suffix == ".srv1":
+        return _normalize_srv1(path)
+    if path.suffix == ".json3":
+        return _normalize_json3(path)
+    raise ValueError("unsupported yt-dlp subtitle format")
+
+
+def _normalize_srv1(path: Path) -> tuple[TranscriptSegment, ...]:
+    """srv1 XML을 외부 엔터티 없이 공통 시간 세그먼트로 정규화한다."""
+
+    payload = path.read_bytes()
+    if not payload or len(payload) > _MAX_SUBTITLE_BYTES:
+        raise ValueError("srv1 subtitle size is invalid")
+    if b"<!DOCTYPE" in payload or b"<!ENTITY" in payload:
+        raise ValueError("srv1 subtitle declarations are unsupported")
+
+    try:
+        root = ElementTree.fromstring(payload)
+    except ElementTree.ParseError as error:
+        raise ValueError("srv1 subtitle XML is invalid") from error
+    if root.tag != "transcript" or root.attrib:
+        raise ValueError("srv1 subtitle root is invalid")
+
+    normalized_events: list[TranscriptSegment] = []
+    previous_start_ms = -1
+    for element in root:
+        if (
+            element.tag != "text"
+            or set(element.attrib) != {"start", "dur"}
+            or len(element) != 0
+        ):
+            raise ValueError("srv1 subtitle event is invalid")
+        start_ms = _srv1_milliseconds(element.attrib["start"])
+        duration_ms = _srv1_milliseconds(element.attrib["dur"])
+        if (
+            duration_ms <= 0
+            or start_ms < previous_start_ms
+            or start_ms + duration_ms > _MAX_TIMESTAMP_MS
+        ):
+            raise ValueError("srv1 subtitle timeline is invalid")
+        normalized_text = normalize_segment_text(element.text or "")
+        normalized_events.append(
+            TranscriptSegment(
+                sequence=len(normalized_events),
+                start_ms=start_ms,
+                end_ms=start_ms + duration_ms,
+                text=normalized_text,
+            )
+        )
+        previous_start_ms = start_ms
+
+    if not normalized_events:
+        raise ValueError("srv1 subtitle payload contains no text")
+    return tuple(normalized_events)
+
+
+def _srv1_milliseconds(value: str) -> int:
+    try:
+        seconds = Decimal(value)
+    except InvalidOperation as error:
+        raise ValueError("srv1 subtitle timestamp is invalid") from error
+    if not seconds.is_finite() or seconds < 0:
+        raise ValueError("srv1 subtitle timestamp is invalid")
+    if seconds * 1000 > _MAX_TIMESTAMP_MS:
+        raise ValueError("srv1 subtitle timestamp is invalid")
+    milliseconds = int((seconds * 1000).quantize(Decimal("1"), ROUND_HALF_UP))
+    if milliseconds < 0:
+        raise ValueError("srv1 subtitle timestamp is invalid")
+    return milliseconds
+
+
 def _json3_milliseconds(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > _MAX_TIMESTAMP_MS
+    ):
         raise ValueError("JSON3 subtitle timestamp must be a non-negative integer")
     return value
 

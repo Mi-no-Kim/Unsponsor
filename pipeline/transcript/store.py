@@ -1,11 +1,17 @@
-"""성공한 자막 원문과 시간 세그먼트를 함께 저장하는 MySQL 경계다."""
+"""성공한 자막의 압축 payload를 저장하고 복원하는 MySQL 경계다."""
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
 
 from common.mysql import MySqlConnectionFactory
+from transcript.codec import (
+    TRANSCRIPT_FORMAT,
+    TranscriptPayloadError,
+    decode_transcript_payload,
+    encode_transcript_payload,
+)
 from transcript.model import TranscriptExtractionResult, TranscriptSource
 
 
@@ -24,38 +30,37 @@ WHERE id = %s
 _UPSERT_VIDEO_TRANSCRIPT_SQL = """
 INSERT INTO video_transcripts (
   video_id,
-  raw_text,
+  transcript_format,
+  transcript_payload,
   source,
   created_at,
   updated_at
 )
-VALUES (%s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+VALUES (%s, %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())
 ON DUPLICATE KEY UPDATE
-  raw_text = %s,
+  transcript_format = %s,
+  transcript_payload = %s,
   source = %s,
   updated_at = UTC_TIMESTAMP()
 """
 
-_DELETE_VIDEO_TRANSCRIPT_SEGMENTS_SQL = """
-DELETE FROM video_transcript_segments
+_SELECT_VIDEO_TRANSCRIPT_SQL = """
+SELECT transcript_format, transcript_payload, source
+FROM video_transcripts
 WHERE video_id = %s
 """
 
-_INSERT_VIDEO_TRANSCRIPT_SEGMENT_SQL = """
-INSERT INTO video_transcript_segments (
-  video_id,
-  sequence,
-  start_ms,
-  end_ms,
-  text,
-  created_at
-)
-VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())
-"""
+
+@dataclass(frozen=True)
+class StoredTranscript:
+    """영구 payload에서 검증을 거쳐 복원한 자막과 출처다."""
+
+    source: TranscriptSource
+    result: TranscriptExtractionResult
 
 
 class TranscriptStore:
-    """성공한 자막의 원문·출처·세그먼트를 같은 트랜잭션에서 교체한다."""
+    """성공한 자막의 압축 payload와 출처를 원자적으로 교체한다."""
 
     def __init__(self, connection_factory: MySqlConnectionFactory) -> None:
         self._connection_factory = connection_factory
@@ -84,19 +89,49 @@ class TranscriptStore:
             raise TranscriptStoreError("database returned invalid YouTube video metadata")
         return row[0]
 
+    def find_success(self, video_id: int) -> StoredTranscript | None:
+        """저장 payload를 완전히 검증한 뒤 공통 세그먼트 모델로 복원한다."""
+
+        _validate_video_id(video_id)
+        connection = self._connection_factory.connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(_SELECT_VIDEO_TRANSCRIPT_SQL, (video_id,))
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+            connection.close()
+
+        if row is None:
+            return None
+        if not isinstance(row, tuple) or len(row) != 3:
+            raise TranscriptStoreError("database returned invalid transcript metadata")
+        try:
+            source = TranscriptSource(row[2])
+            segments = decode_transcript_payload(row[0], row[1])
+        except (ValueError, TranscriptPayloadError) as error:
+            raise TranscriptStoreError(
+                "database returned an invalid transcript payload"
+            ) from error
+        return StoredTranscript(
+            source=source,
+            result=TranscriptExtractionResult.succeeded(segments),
+        )
+
     def replace_success(
         self,
         video_id: int,
         source: TranscriptSource,
         result: TranscriptExtractionResult,
     ) -> None:
-        """성공 결과를 저장하고, 실패하면 기존 원문·세그먼트를 모두 보존한다."""
+        """성공 결과를 저장하고, 실패하면 기존 payload를 보존한다."""
 
         _validate_video_id(video_id)
         if not isinstance(source, TranscriptSource):
             raise ValueError("transcript source must be a supported source")
         if not result.is_success or result.text is None:
             raise ValueError("only a successful transcript result can be stored")
+        payload = encode_transcript_payload(result.segments)
 
         connection = self._connection_factory.connect()
         cursor = connection.cursor()
@@ -106,30 +141,14 @@ class TranscriptStore:
                 _UPSERT_VIDEO_TRANSCRIPT_SQL,
                 (
                     video_id,
-                    result.text,
+                    TRANSCRIPT_FORMAT,
+                    payload,
                     source.value,
-                    result.text,
+                    TRANSCRIPT_FORMAT,
+                    payload,
                     source.value,
                 ),
             )
-            cursor.execute(_DELETE_VIDEO_TRANSCRIPT_SEGMENTS_SQL, (video_id,))
-            cursor.executemany(
-                _INSERT_VIDEO_TRANSCRIPT_SEGMENT_SQL,
-                [
-                    (
-                        video_id,
-                        segment.sequence,
-                        segment.start_ms,
-                        segment.end_ms,
-                        segment.text,
-                    )
-                    for segment in result.segments
-                ],
-            )
-            if cursor.rowcount != len(result.segments):
-                raise TranscriptStoreError(
-                    "database could not safely insert all transcript segments"
-                )
             connection.commit()
         except Exception:
             connection.rollback()

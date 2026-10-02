@@ -1,4 +1,4 @@
-"""실제 API 결과와 yt-dlp JSON3 본문을 W-027 로컬 fixture로 수집한다."""
+"""실제 API 결과와 yt-dlp srv1 본문을 로컬 fixture로 수집한다."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from transcript.ytdlp_extractor import (
     ProviderUnavailable,
     _YtDlpErrorLogger,
     _download_failure,
-    _normalize_json3,
+    _normalize_srv1,
     _yt_dlp_options,
 )
 from youtube_transcript_api._errors import (
@@ -46,7 +46,7 @@ class TranscriptFixtureCaptureError(RuntimeError):
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _LANGUAGE_CODES = ("ko", "en")
 _LIBRARY_FIXTURE_FILENAME = "api-success.json"
-_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3"
+_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.srv1"
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -55,6 +55,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--fixture-dir", required=True, type=Path)
     parser.add_argument("--provider-home", type=Path)
     parser.add_argument("--cookie-file", type=Path)
+    parser.add_argument("--reuse-library-fixture-dir", type=Path)
     parser.add_argument("--confirm-external-request", action="store_true")
     arguments = parser.parse_args(argv)
     if not arguments.confirm_external_request:
@@ -66,7 +67,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         _require_new_dataset(arguments.fixture_dir)
         video_id = _read_selection(arguments.selection_file)
         repository_root = Path(__file__).resolve().parents[2]
-        library_payload = _capture_library_payload(repository_root, video_id)
+        library_payload = (
+            _reuse_library_payload(arguments.reuse_library_fixture_dir)
+            if arguments.reuse_library_fixture_dir is not None
+            else _capture_library_payload(repository_root, video_id)
+        )
         ytdlp_payload = _capture_ytdlp_payload(
             video_id,
             provider_home=arguments.provider_home,
@@ -124,6 +129,7 @@ def _require_new_dataset(fixture_dir: Path) -> None:
         for filename in (
             _LIBRARY_FIXTURE_FILENAME,
             _YTDLP_FIXTURE_FILENAME,
+            "yt-dlp-success.json3",
             "manifest.json",
         )
     ):
@@ -184,6 +190,27 @@ def _capture_library_payload(repository_root: Path, video_id: str) -> bytes:
 
     if not payload:
         raise TranscriptFixtureCaptureError("api_fixture_payload_invalid")
+    return payload
+
+
+def _reuse_library_payload(fixture_dir: Path) -> bytes:
+    """검증된 기존 데이터셋의 API fixture만 재사용해 외부 API 재호출을 피한다."""
+
+    try:
+        TranscriptFixtureDataset.load(fixture_dir)
+        root = Path(fixture_dir)
+        payload_path = root / _LIBRARY_FIXTURE_FILENAME
+        if payload_path.is_symlink():
+            raise OSError("symlink is unsupported")
+        payload = payload_path.read_bytes()
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        expected_hash = manifest["fixtures"]["library_success"]["sha256"]
+        if hashlib.sha256(payload).hexdigest() != expected_hash:
+            raise ValueError("fixture changed after validation")
+    except Exception as error:
+        raise TranscriptFixtureCaptureError("reused_api_fixture_invalid") from error
+    if not payload:
+        raise TranscriptFixtureCaptureError("reused_api_fixture_invalid")
     return payload
 
 
@@ -271,7 +298,7 @@ def _download_ytdlp_payload(
                     None,
                 )
 
-            files = tuple(output_directory.glob("*.json3"))
+            files = tuple(output_directory.glob("*.srv1"))
             if not files:
                 if ytdlp_logger.failure_hint is not None:
                     return ytdlp_logger.failure_hint, None
@@ -279,7 +306,7 @@ def _download_ytdlp_payload(
             if len(files) != 1:
                 return TranscriptFailure.INVALID_RESPONSE, None
             try:
-                _normalize_json3(files[0])
+                _normalize_srv1(files[0])
                 return None, files[0].read_bytes()
             except (
                 OSError,
@@ -313,7 +340,7 @@ def _write_dataset(
     ytdlp_path = root / _YTDLP_FIXTURE_FILENAME
     manifest_path = root / "manifest.json"
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
         "fixtures": {
             "library_success": {
                 "file": _LIBRARY_FIXTURE_FILENAME,
@@ -322,7 +349,7 @@ def _write_dataset(
             },
             "ytdlp_success": {
                 "file": _YTDLP_FIXTURE_FILENAME,
-                "format": "json3",
+                "format": "srv1",
                 "sha256": hashlib.sha256(ytdlp_payload).hexdigest(),
             },
         },
