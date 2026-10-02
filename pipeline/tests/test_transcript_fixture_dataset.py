@@ -14,33 +14,36 @@ from transcript.fixture_dataset import (
 
 
 class TranscriptFixtureDatasetTests(unittest.TestCase):
-    def test_loads_actual_json3_shape_through_production_normalizer(self) -> None:
+    def test_loads_both_actual_shapes_through_production_normalizers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_dataset(root)
 
             dataset = TranscriptFixtureDataset.load(root)
 
+            self.assertEqual(dataset.library_success.text, "api first\napi second")
+            self.assertEqual(len(dataset.library_success.segments), 2)
             self.assertEqual(dataset.ytdlp_success.text, "yt-dlp first\nyt-dlp second")
             self.assertEqual(len(dataset.ytdlp_success.segments), 2)
 
-    def test_rejects_payload_changed_after_capture(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _write_dataset(root)
-            (root / "yt-dlp-success.json3").write_text("{}", encoding="utf-8")
+    def test_rejects_each_payload_changed_after_capture(self) -> None:
+        for filename in ("api-success.json", "yt-dlp-success.json3"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _write_dataset(root)
+                (root / filename).write_text("{}", encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                TranscriptFixtureDatasetError, "checksum does not match"
-            ):
-                TranscriptFixtureDataset.load(root)
+                with self.assertRaisesRegex(
+                    TranscriptFixtureDatasetError, "checksum does not match"
+                ):
+                    TranscriptFixtureDataset.load(root)
 
     def test_rejects_payload_path_outside_fixture_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_dataset(root)
             manifest = _read_manifest(root)
-            manifest["fixture"]["file"] = "../outside.json3"
+            manifest["fixtures"]["library_success"]["file"] = "../outside.json"
             _write_manifest(root, manifest)
 
             with self.assertRaisesRegex(
@@ -68,22 +71,42 @@ class TranscriptFixtureDatasetTests(unittest.TestCase):
             with patch.object(
                 Path,
                 "is_symlink",
-                lambda path: path.name == "yt-dlp-success.json3",
+                lambda path: path.name == "api-success.json",
             ):
                 with self.assertRaisesRegex(
                     TranscriptFixtureDatasetError, "payload is unavailable"
                 ):
                     TranscriptFixtureDataset.load(root)
 
-    def test_rejects_malformed_json3_after_valid_checksum(self) -> None:
+    def test_rejects_malformed_library_shape_after_valid_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _write_dataset(root, payload=b'{"events":[]}')
+            _write_dataset(root, library_payload=b'[{"text":"missing timing"}]')
 
             with self.assertRaisesRegex(
                 TranscriptFixtureDatasetError, "could not be normalized"
             ):
                 TranscriptFixtureDataset.load(root)
+
+    def test_rejects_malformed_json3_after_valid_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_dataset(root, ytdlp_payload=b'{"events":[]}')
+
+            with self.assertRaisesRegex(
+                TranscriptFixtureDatasetError, "could not be normalized"
+            ):
+                TranscriptFixtureDataset.load(root)
+
+
+def _library_payload() -> bytes:
+    payload = [
+        {"text": "api first", "start": 0.0, "duration": 1.0},
+        {"text": "api second", "start": 1.0, "duration": 1.5},
+    ]
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 def _json3_payload() -> bytes:
@@ -105,17 +128,31 @@ def _json3_payload() -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
-def _write_dataset(root: Path, *, payload: bytes | None = None) -> None:
-    content = _json3_payload() if payload is None else payload
-    (root / "yt-dlp-success.json3").write_bytes(content)
+def _write_dataset(
+    root: Path,
+    *,
+    library_payload: bytes | None = None,
+    ytdlp_payload: bytes | None = None,
+) -> None:
+    library_content = _library_payload() if library_payload is None else library_payload
+    ytdlp_content = _json3_payload() if ytdlp_payload is None else ytdlp_payload
+    (root / "api-success.json").write_bytes(library_content)
+    (root / "yt-dlp-success.json3").write_bytes(ytdlp_content)
     _write_manifest(
         root,
         {
-            "schema_version": 2,
-            "fixture": {
-                "file": "yt-dlp-success.json3",
-                "format": "json3",
-                "sha256": hashlib.sha256(content).hexdigest(),
+            "schema_version": 3,
+            "fixtures": {
+                "library_success": {
+                    "file": "api-success.json",
+                    "format": "youtube-transcript-api-snippets",
+                    "sha256": hashlib.sha256(library_content).hexdigest(),
+                },
+                "ytdlp_success": {
+                    "file": "yt-dlp-success.json3",
+                    "format": "json3",
+                    "sha256": hashlib.sha256(ytdlp_content).hexdigest(),
+                },
             },
         },
     )

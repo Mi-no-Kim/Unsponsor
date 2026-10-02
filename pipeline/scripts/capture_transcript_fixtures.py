@@ -1,4 +1,4 @@
-"""실제 yt-dlp JSON3 응답 본문 한 건을 W-027 로컬 fixture로 수집한다."""
+"""실제 API 결과와 yt-dlp JSON3 본문을 W-027 로컬 fixture로 수집한다."""
 
 from __future__ import annotations
 
@@ -13,7 +13,10 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+from common.config import ConfigurationError, load_dataimpulse_proxy_settings
+from transcript.dataimpulse_proxy import create_dataimpulse_api
 from transcript.fixture_dataset import TranscriptFixtureDataset
+from transcript.library_extractor import _normalize_response
 from transcript.model import TranscriptFailure
 from transcript.ytdlp_extractor import (
     BgutilProviderSession,
@@ -22,6 +25,11 @@ from transcript.ytdlp_extractor import (
     _download_failure,
     _normalize_json3,
     _yt_dlp_options,
+)
+from youtube_transcript_api._errors import (
+    IpBlocked,
+    NoTranscriptFound,
+    TranscriptsDisabled,
 )
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
@@ -37,7 +45,8 @@ class TranscriptFixtureCaptureError(RuntimeError):
 
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _LANGUAGE_CODES = ("ko", "en")
-_FIXTURE_FILENAME = "yt-dlp-success.json3"
+_LIBRARY_FIXTURE_FILENAME = "api-success.json"
+_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3"
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -54,14 +63,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     started_at = time.monotonic()
     try:
         _validate_optional_paths(arguments.provider_home, arguments.cookie_file)
+        _require_new_dataset(arguments.fixture_dir)
         video_id = _read_selection(arguments.selection_file)
-        payload = _capture_ytdlp_payload(
+        repository_root = Path(__file__).resolve().parents[2]
+        library_payload = _capture_library_payload(repository_root, video_id)
+        ytdlp_payload = _capture_ytdlp_payload(
             video_id,
             provider_home=arguments.provider_home,
             cookie_file=arguments.cookie_file,
             error_logger=_silent_logger(),
         )
-        _write_dataset(arguments.fixture_dir, payload)
+        _write_dataset(arguments.fixture_dir, library_payload, ytdlp_payload)
     except TranscriptFixtureCaptureError as error:
         _print_failure(error.code)
     except Exception:
@@ -71,7 +83,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         json.dumps(
             {
                 "status": "passed",
-                "code": "fixture_captured",
+                "code": "fixtures_captured",
                 "elapsed_seconds": _elapsed(started_at),
             },
             separators=(",", ":"),
@@ -103,6 +115,21 @@ def _validate_optional_paths(
         raise TranscriptFixtureCaptureError("provider_unavailable")
 
 
+def _require_new_dataset(fixture_dir: Path) -> None:
+    root = Path(fixture_dir)
+    if root.exists() and (not root.is_dir() or root.is_symlink()):
+        raise TranscriptFixtureCaptureError("fixture_directory_invalid")
+    if any(
+        (root / filename).exists()
+        for filename in (
+            _LIBRARY_FIXTURE_FILENAME,
+            _YTDLP_FIXTURE_FILENAME,
+            "manifest.json",
+        )
+    ):
+        raise TranscriptFixtureCaptureError("fixture_dataset_already_exists")
+
+
 def _read_selection(path: Path) -> str:
     selection_path = Path(path)
     if selection_path.is_symlink():
@@ -117,6 +144,47 @@ def _read_selection(path: Path) -> str:
     if not isinstance(video_id, str) or not _VIDEO_ID_PATTERN.fullmatch(video_id):
         raise TranscriptFixtureCaptureError("selection_video_id_invalid")
     return video_id
+
+
+def _capture_library_payload(repository_root: Path, video_id: str) -> bytes:
+    try:
+        settings = load_dataimpulse_proxy_settings(repository_root)
+    except ConfigurationError as error:
+        raise TranscriptFixtureCaptureError("proxy_configuration_invalid") from error
+
+    session = None
+    try:
+        session, api = create_dataimpulse_api(settings)
+        fetched = api.fetch(
+            video_id,
+            languages=list(_LANGUAGE_CODES),
+            preserve_formatting=False,
+        )
+        raw_data = fetched.to_raw_data()
+        _normalize_response(fetched)
+        payload = json.dumps(
+            raw_data,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except IpBlocked as error:
+        raise TranscriptFixtureCaptureError("rate_limited") from error
+    except (NoTranscriptFound, TranscriptsDisabled) as error:
+        raise TranscriptFixtureCaptureError("no_transcript") from error
+    except TranscriptFixtureCaptureError:
+        raise
+    except Exception as error:
+        raise TranscriptFixtureCaptureError("api_fixture_capture_failed") from error
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    if not payload:
+        raise TranscriptFixtureCaptureError("api_fixture_payload_invalid")
+    return payload
 
 
 def _capture_ytdlp_payload(
@@ -137,7 +205,7 @@ def _capture_ytdlp_payload(
     if failure is TranscriptFailure.RATE_LIMITED:
         raise TranscriptFixtureCaptureError("rate_limited")
     if failure is not TranscriptFailure.PO_TOKEN_REQUIRED or provider_home is None:
-        raise TranscriptFixtureCaptureError("fixture_capture_failed")
+        raise TranscriptFixtureCaptureError("ytdlp_fixture_capture_failed")
 
     try:
         with BgutilProviderSession(provider_home) as provider:
@@ -153,7 +221,7 @@ def _capture_ytdlp_payload(
         return payload
     if failure is TranscriptFailure.RATE_LIMITED:
         raise TranscriptFixtureCaptureError("rate_limited")
-    raise TranscriptFixtureCaptureError("fixture_capture_failed")
+    raise TranscriptFixtureCaptureError("ytdlp_fixture_capture_failed")
 
 
 def _download_ytdlp_payload(
@@ -224,47 +292,57 @@ def _download_ytdlp_payload(
     return TranscriptFailure.NO_TRANSCRIPT, None
 
 
-def _write_dataset(fixture_dir: Path, payload: bytes) -> None:
-    if not isinstance(payload, bytes) or not payload:
-        raise TranscriptFixtureCaptureError("fixture_payload_invalid")
+def _write_dataset(
+    fixture_dir: Path,
+    library_payload: bytes,
+    ytdlp_payload: bytes,
+) -> None:
+    if not isinstance(library_payload, bytes) or not library_payload:
+        raise TranscriptFixtureCaptureError("api_fixture_payload_invalid")
+    if not isinstance(ytdlp_payload, bytes) or not ytdlp_payload:
+        raise TranscriptFixtureCaptureError("ytdlp_fixture_payload_invalid")
 
     root = Path(fixture_dir)
-    if root.exists() and (not root.is_dir() or root.is_symlink()):
-        raise TranscriptFixtureCaptureError("fixture_directory_invalid")
+    _require_new_dataset(root)
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise TranscriptFixtureCaptureError("fixture_directory_unavailable") from error
 
-    payload_path = root / _FIXTURE_FILENAME
+    library_path = root / _LIBRARY_FIXTURE_FILENAME
+    ytdlp_path = root / _YTDLP_FIXTURE_FILENAME
     manifest_path = root / "manifest.json"
-    if payload_path.exists() or manifest_path.exists():
-        raise TranscriptFixtureCaptureError("fixture_dataset_already_exists")
-
     manifest = {
-        "schema_version": 2,
-        "fixture": {
-            "file": _FIXTURE_FILENAME,
-            "format": "json3",
-            "sha256": hashlib.sha256(payload).hexdigest(),
+        "schema_version": 3,
+        "fixtures": {
+            "library_success": {
+                "file": _LIBRARY_FIXTURE_FILENAME,
+                "format": "youtube-transcript-api-snippets",
+                "sha256": hashlib.sha256(library_payload).hexdigest(),
+            },
+            "ytdlp_success": {
+                "file": _YTDLP_FIXTURE_FILENAME,
+                "format": "json3",
+                "sha256": hashlib.sha256(ytdlp_payload).hexdigest(),
+            },
         },
     }
-    payload_created = False
-    manifest_created = False
+    created_paths: list[Path] = []
     try:
-        with payload_path.open("xb") as stream:
-            payload_created = True
-            stream.write(payload)
+        with library_path.open("xb") as stream:
+            created_paths.append(library_path)
+            stream.write(library_payload)
+        with ytdlp_path.open("xb") as stream:
+            created_paths.append(ytdlp_path)
+            stream.write(ytdlp_payload)
         with manifest_path.open("x", encoding="utf-8", newline="\n") as stream:
-            manifest_created = True
+            created_paths.append(manifest_path)
             json.dump(manifest, stream, ensure_ascii=False, separators=(",", ":"))
             stream.write("\n")
         TranscriptFixtureDataset.load(root)
     except Exception as error:
-        if manifest_created:
-            manifest_path.unlink(missing_ok=True)
-        if payload_created:
-            payload_path.unlink(missing_ok=True)
+        for created_path in reversed(created_paths):
+            created_path.unlink(missing_ok=True)
         if isinstance(error, TranscriptFixtureCaptureError):
             raise
         raise TranscriptFixtureCaptureError("fixture_write_failed") from error

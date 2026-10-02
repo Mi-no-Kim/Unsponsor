@@ -6,11 +6,13 @@ import logging
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.capture_transcript_fixtures import (
     TranscriptFixtureCaptureError,
+    _capture_library_payload,
     _capture_ytdlp_payload,
     _read_selection,
     _write_dataset,
@@ -18,6 +20,7 @@ from scripts.capture_transcript_fixtures import (
 )
 from transcript.fixture_dataset import TranscriptFixtureDataset
 from transcript.model import TranscriptFailure
+from youtube_transcript_api._errors import IpBlocked
 
 
 class CaptureTranscriptFixturesTests(unittest.TestCase):
@@ -31,7 +34,7 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
             )
 
             selected = _read_selection(selection_path)
-            _write_dataset(root / "dataset", _json3_payload())
+            _write_dataset(root / "dataset", _library_payload(), _json3_payload())
             manifest = (root / "dataset" / "manifest.json").read_text(
                 encoding="utf-8"
             )
@@ -58,14 +61,65 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
     def test_refuses_to_overwrite_existing_fixture_or_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "dataset"
-            _write_dataset(target, _json3_payload())
+            _write_dataset(target, _library_payload(), _json3_payload())
 
             with self.assertRaisesRegex(
                 TranscriptFixtureCaptureError, "fixture_dataset_already_exists"
             ):
-                _write_dataset(target, _json3_payload())
+                _write_dataset(target, _library_payload(), _json3_payload())
 
-    def test_rate_limit_stops_without_starting_provider_request(self) -> None:
+    def test_library_fixture_is_compact_and_contains_only_normalizer_fields(
+        self,
+    ) -> None:
+        session = Mock()
+        api = Mock()
+        fetched = _FetchedTranscript(
+            [_Snippet(text="actual fixture", start=0.0, duration=1.25)]
+        )
+        api.fetch.return_value = fetched
+        with (
+            patch(
+                "scripts.capture_transcript_fixtures.load_dataimpulse_proxy_settings",
+                return_value=Mock(),
+            ),
+            patch(
+                "scripts.capture_transcript_fixtures.create_dataimpulse_api",
+                return_value=(session, api),
+            ),
+        ):
+            payload = _capture_library_payload(Path("repository"), "fixture001a")
+
+        self.assertEqual(
+            payload,
+            b'[{"text":"actual fixture","start":0.0,"duration":1.25}]',
+        )
+        api.fetch.assert_called_once_with(
+            "fixture001a",
+            languages=["ko", "en"],
+            preserve_formatting=False,
+        )
+        session.close.assert_called_once()
+
+    def test_library_rate_limit_is_reported_without_starting_ytdlp(self) -> None:
+        session = Mock()
+        api = Mock()
+        api.fetch.side_effect = IpBlocked("private upstream detail")
+        with (
+            patch(
+                "scripts.capture_transcript_fixtures.load_dataimpulse_proxy_settings",
+                return_value=Mock(),
+            ),
+            patch(
+                "scripts.capture_transcript_fixtures.create_dataimpulse_api",
+                return_value=(session, api),
+            ),
+            self.assertRaisesRegex(TranscriptFixtureCaptureError, "rate_limited"),
+        ):
+            _capture_library_payload(Path("repository"), "fixture001a")
+
+        session.close.assert_called_once()
+
+    def test_ytdlp_rate_limit_stops_without_starting_provider_request(self) -> None:
         with (
             patch(
                 "scripts.capture_transcript_fixtures._download_ytdlp_payload",
@@ -109,7 +163,7 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             patch(
-                "scripts.capture_transcript_fixtures._read_selection",
+                "scripts.capture_transcript_fixtures._require_new_dataset",
                 side_effect=RuntimeError("private upstream detail"),
             ),
             redirect_stdout(stdout),
@@ -132,6 +186,36 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
         )
         self.assertNotIn("private", stdout.getvalue())
         self.assertNotIn("Traceback", stdout.getvalue())
+
+
+@dataclass(frozen=True)
+class _Snippet:
+    text: str
+    start: float
+    duration: float
+
+
+class _FetchedTranscript(list[_Snippet]):
+    def to_raw_data(self) -> list[dict[str, object]]:
+        return [
+            {
+                "text": snippet.text,
+                "start": snippet.start,
+                "duration": snippet.duration,
+            }
+            for snippet in self
+        ]
+
+
+def _library_payload() -> bytes:
+    return json.dumps(
+        [
+            {"text": "api first", "start": 0.0, "duration": 1.0},
+            {"text": "api second", "start": 1.0, "duration": 1.5},
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _json3_payload() -> bytes:

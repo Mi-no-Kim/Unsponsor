@@ -25,7 +25,6 @@ from transcript.fixture_dataset import (
 from transcript.model import (
     TranscriptExtractionResult,
     TranscriptFailure,
-    TranscriptSegment,
     TranscriptSource,
 )
 from transcript.stage_runner import TranscriptStageRunner
@@ -448,6 +447,29 @@ def _verify_stage_transitions(
     )
     checks: list[str] = []
 
+    library_video = _insert_video_and_queue(factory, channel_id, "library_success")
+    library_fixture = _FixedExtractor(dataset.library_success)
+    unused_ytdlp = _FixedExtractor(no_transcript)
+    library_result = _run_stage(
+        queue,
+        store,
+        unused_ytdlp,
+        library_extractor=library_fixture,
+    )
+    _require(
+        library_result.library_count == 1
+        and library_fixture.calls == 1
+        and unused_ytdlp.calls == 0
+    )
+    _assert_queue_state(factory, library_video, "identify", "pending", None, 0)
+    _assert_transcript_result(
+        factory,
+        library_video,
+        TranscriptSource.LIBRARY,
+        dataset.library_success,
+    )
+    checks.append("library_fixture_committed")
+
     success_video = _insert_video_and_queue(factory, channel_id, "success")
     success_library = _FixedExtractor(no_transcript)
     success_ytdlp = _FixedExtractor(dataset.ytdlp_success)
@@ -510,7 +532,7 @@ def _verify_stage_transitions(
     store.replace_success(
         replacement_video,
         TranscriptSource.LIBRARY,
-        _initial_replacement_result(),
+        dataset.library_success,
     )
     _run_stage(
         queue,
@@ -648,6 +670,7 @@ def _insert_row(
 
 def _verification_youtube_video_id(label: str) -> str:
     values = {
+        "library_success": "verify00008",
         "success": "verify00001",
         "no_transcript": "verify00003",
         "rate_limited": "verify00004",
@@ -803,15 +826,6 @@ def _fetch_all(
     if not isinstance(rows, list) or any(not isinstance(row, tuple) for row in rows):
         raise W027VerificationError("database_query_invalid")
     return tuple(rows)
-
-
-def _initial_replacement_result() -> TranscriptExtractionResult:
-    return TranscriptExtractionResult.succeeded(
-        (
-            TranscriptSegment(0, 0, 500, "superseded first segment"),
-            TranscriptSegment(1, 500, 1000, "superseded second segment"),
-        )
-    )
 
 
 def _require(condition: bool) -> None:
