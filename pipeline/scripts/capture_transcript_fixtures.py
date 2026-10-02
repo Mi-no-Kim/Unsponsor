@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import logging
@@ -46,8 +45,8 @@ class TranscriptFixtureCaptureError(RuntimeError):
 
 _VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _LANGUAGE_CODES = ("ko", "en")
-_LIBRARY_FIXTURE_FILENAME = "api-success.json.gz"
-_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3.gz"
+_LIBRARY_FIXTURE_FILENAME = "api-success.json"
+_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3"
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -125,8 +124,6 @@ def _require_new_dataset(fixture_dir: Path) -> None:
         for filename in (
             _LIBRARY_FIXTURE_FILENAME,
             _YTDLP_FIXTURE_FILENAME,
-            "api-success.json",
-            "yt-dlp-success.json3",
             "manifest.json",
         )
     ):
@@ -312,25 +309,21 @@ def _write_dataset(
     except OSError as error:
         raise TranscriptFixtureCaptureError("fixture_directory_unavailable") from error
 
-    compressed_library_payload = _compress_payload(library_payload)
-    compressed_ytdlp_payload = _compress_payload(ytdlp_payload)
     library_path = root / _LIBRARY_FIXTURE_FILENAME
     ytdlp_path = root / _YTDLP_FIXTURE_FILENAME
     manifest_path = root / "manifest.json"
     manifest = {
-        "schema_version": 4,
+        "schema_version": 3,
         "fixtures": {
             "library_success": {
                 "file": _LIBRARY_FIXTURE_FILENAME,
                 "format": "youtube-transcript-api-snippets",
-                "compression": "gzip",
-                "sha256": hashlib.sha256(compressed_library_payload).hexdigest(),
+                "sha256": hashlib.sha256(library_payload).hexdigest(),
             },
             "ytdlp_success": {
                 "file": _YTDLP_FIXTURE_FILENAME,
                 "format": "json3",
-                "compression": "gzip",
-                "sha256": hashlib.sha256(compressed_ytdlp_payload).hexdigest(),
+                "sha256": hashlib.sha256(ytdlp_payload).hexdigest(),
             },
         },
     }
@@ -338,10 +331,10 @@ def _write_dataset(
     try:
         with library_path.open("xb") as stream:
             created_paths.append(library_path)
-            stream.write(compressed_library_payload)
+            stream.write(library_payload)
         with ytdlp_path.open("xb") as stream:
             created_paths.append(ytdlp_path)
-            stream.write(compressed_ytdlp_payload)
+            stream.write(ytdlp_payload)
         with manifest_path.open("x", encoding="utf-8", newline="\n") as stream:
             created_paths.append(manifest_path)
             json.dump(manifest, stream, ensure_ascii=False, separators=(",", ":"))
@@ -353,15 +346,6 @@ def _write_dataset(
         if isinstance(error, TranscriptFixtureCaptureError):
             raise
         raise TranscriptFixtureCaptureError("fixture_write_failed") from error
-
-
-def _compress_payload(payload: bytes) -> bytes:
-    """fixture를 같은 입력에서 같은 바이트가 나오도록 gzip level 9로 압축한다."""
-
-    try:
-        return gzip.compress(payload, compresslevel=9, mtime=0)
-    except (OSError, ValueError) as error:
-        raise TranscriptFixtureCaptureError("fixture_compression_failed") from error
 
 
 def _silent_logger() -> logging.Logger:

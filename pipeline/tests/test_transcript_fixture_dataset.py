@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import gzip
 import json
 import tempfile
 import unittest
@@ -28,7 +27,7 @@ class TranscriptFixtureDatasetTests(unittest.TestCase):
             self.assertEqual(len(dataset.ytdlp_success.segments), 2)
 
     def test_rejects_each_payload_changed_after_capture(self) -> None:
-        for filename in ("api-success.json.gz", "yt-dlp-success.json3.gz"):
+        for filename in ("api-success.json", "yt-dlp-success.json3"):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 _write_dataset(root)
@@ -72,42 +71,12 @@ class TranscriptFixtureDatasetTests(unittest.TestCase):
             with patch.object(
                 Path,
                 "is_symlink",
-                lambda path: path.name == "api-success.json.gz",
+                lambda path: path.name == "api-success.json",
             ):
                 with self.assertRaisesRegex(
                     TranscriptFixtureDatasetError, "payload is unavailable"
                 ):
                     TranscriptFixtureDataset.load(root)
-
-    def test_rejects_invalid_gzip_after_valid_checksum(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _write_dataset(root)
-            invalid_gzip = b"not-a-gzip-payload"
-            (root / "api-success.json.gz").write_bytes(invalid_gzip)
-            manifest = _read_manifest(root)
-            manifest["fixtures"]["library_success"]["sha256"] = hashlib.sha256(
-                invalid_gzip
-            ).hexdigest()
-            _write_manifest(root, manifest)
-
-            with self.assertRaisesRegex(
-                TranscriptFixtureDatasetError, "gzip payload is invalid"
-            ):
-                TranscriptFixtureDataset.load(root)
-
-    def test_rejects_decompressed_payload_over_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _write_dataset(root)
-
-            with (
-                patch("transcript.fixture_dataset._MAX_DECOMPRESSED_BYTES", 8),
-                self.assertRaisesRegex(
-                    TranscriptFixtureDatasetError, "decompressed size is invalid"
-                ),
-            ):
-                TranscriptFixtureDataset.load(root)
 
     def test_rejects_malformed_library_shape_after_valid_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -167,26 +136,22 @@ def _write_dataset(
 ) -> None:
     library_content = _library_payload() if library_payload is None else library_payload
     ytdlp_content = _json3_payload() if ytdlp_payload is None else ytdlp_payload
-    compressed_library = gzip.compress(library_content, compresslevel=9, mtime=0)
-    compressed_ytdlp = gzip.compress(ytdlp_content, compresslevel=9, mtime=0)
-    (root / "api-success.json.gz").write_bytes(compressed_library)
-    (root / "yt-dlp-success.json3.gz").write_bytes(compressed_ytdlp)
+    (root / "api-success.json").write_bytes(library_content)
+    (root / "yt-dlp-success.json3").write_bytes(ytdlp_content)
     _write_manifest(
         root,
         {
-            "schema_version": 4,
+            "schema_version": 3,
             "fixtures": {
                 "library_success": {
-                    "file": "api-success.json.gz",
+                    "file": "api-success.json",
                     "format": "youtube-transcript-api-snippets",
-                    "compression": "gzip",
-                    "sha256": hashlib.sha256(compressed_library).hexdigest(),
+                    "sha256": hashlib.sha256(library_content).hexdigest(),
                 },
                 "ytdlp_success": {
-                    "file": "yt-dlp-success.json3.gz",
+                    "file": "yt-dlp-success.json3",
                     "format": "json3",
-                    "compression": "gzip",
-                    "sha256": hashlib.sha256(compressed_ytdlp).hexdigest(),
+                    "sha256": hashlib.sha256(ytdlp_content).hexdigest(),
                 },
             },
         },
