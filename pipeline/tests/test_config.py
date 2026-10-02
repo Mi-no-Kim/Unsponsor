@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from common.config import ConfigurationError, load_settings
+from common.config import (
+    ConfigurationError,
+    load_dataimpulse_proxy_settings,
+    load_settings,
+)
 
 
 REQUIRED_ENVIRONMENT_KEYS = (
@@ -71,6 +75,9 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(settings.channels[0].language_code, "ko")
         self.assertEqual(settings.channels[1].language_code, "en-US")
         self.assertIsNone(settings.selected_video_ids)
+        self.assertEqual(settings.queue.max_attempts, 3)
+        self.assertEqual(settings.queue.retry_backoff_base_seconds, 300)
+        self.assertEqual(settings.queue.stale_after_seconds, 1800)
         self.assertNotIn("super-secret-api-key", repr(settings))
         self.assertNotIn("super-secret-password", repr(settings))
 
@@ -135,6 +142,35 @@ class LoadSettingsTests(unittest.TestCase):
         )
 
         self.assertEqual(settings.mysql.host, "database.internal")
+
+    def test_loads_queue_retry_settings_from_the_environment(self) -> None:
+        settings = load_settings(
+            self.test_repository_root,
+            self.channel_seed_path,
+            environment={
+                "QUEUE_MAX_ATTEMPTS": "4",
+                "QUEUE_RETRY_BACKOFF_BASE_SECONDS": "60",
+                "QUEUE_STALE_AFTER_SECONDS": "3600",
+            },
+        )
+
+        self.assertEqual(settings.queue.max_attempts, 4)
+        self.assertEqual(settings.queue.retry_backoff_base_seconds, 60)
+        self.assertEqual(settings.queue.stale_after_seconds, 3600)
+
+    def test_rejects_non_positive_queue_settings(self) -> None:
+        for key, value in (
+            ("QUEUE_MAX_ATTEMPTS", "0"),
+            ("QUEUE_RETRY_BACKOFF_BASE_SECONDS", "-1"),
+            ("QUEUE_STALE_AFTER_SECONDS", "not-a-number"),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ConfigurationError, f"{key} must be"):
+                    load_settings(
+                        self.test_repository_root,
+                        self.channel_seed_path,
+                        environment={key: value},
+                    )
 
     def test_missing_required_settings_fails_before_external_clients_are_created(self) -> None:
         (self.test_repository_root / ".env").write_text(
@@ -208,6 +244,12 @@ class LoadSettingsTests(unittest.TestCase):
 
         for key in REQUIRED_ENVIRONMENT_KEYS:
             self.assertIn(f"{key}=", environment_example)
+        self.assertIn("QUEUE_MAX_ATTEMPTS=3", environment_example)
+        self.assertIn("QUEUE_RETRY_BACKOFF_BASE_SECONDS=300", environment_example)
+        self.assertIn("QUEUE_STALE_AFTER_SECONDS=1800", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_USERNAME=", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_PASSWORD=", environment_example)
+        self.assertIn("DATAIMPULSE_PROXY_COUNTRY=kr", environment_example)
         self.assertEqual(channels_example["channels"][0]["language_code"], "ko")
         self.assertRegex(
             channels_example["channels"][0]["channel_id"], r"^UC[A-Za-z0-9_-]{22}$"
@@ -219,6 +261,64 @@ class LoadSettingsTests(unittest.TestCase):
                 for video_id in channels_example["selected_video_ids"]
             )
         )
+
+    def test_loads_dataimpulse_canary_settings_without_exposing_secrets(self) -> None:
+        (self.test_repository_root / ".env").write_text(
+            "\n".join(
+                [
+                    "DATAIMPULSE_PROXY_USERNAME=private-login",
+                    "DATAIMPULSE_PROXY_PASSWORD=private-password",
+                    "DATAIMPULSE_PROXY_COUNTRY=KR",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        settings = load_dataimpulse_proxy_settings(
+            self.test_repository_root, environment={}
+        )
+
+        self.assertEqual(settings.username, "private-login")
+        self.assertEqual(settings.password, "private-password")
+        self.assertEqual(settings.country_code, "kr")
+        self.assertNotIn("private-login", repr(settings))
+        self.assertNotIn("private-password", repr(settings))
+
+    def test_rejects_parameterized_dataimpulse_login_and_invalid_country(self) -> None:
+        base_environment = {
+            "DATAIMPULSE_PROXY_PASSWORD": "private-password",
+            "DATAIMPULSE_PROXY_COUNTRY": "kr",
+        }
+        with self.assertRaisesRegex(ConfigurationError, "base Proxy Access login"):
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={
+                    **base_environment,
+                    "DATAIMPULSE_PROXY_USERNAME": "login__cr.kr",
+                },
+            )
+
+        with self.assertRaisesRegex(ConfigurationError, "two-letter country code"):
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={
+                    **base_environment,
+                    "DATAIMPULSE_PROXY_USERNAME": "private-login",
+                    "DATAIMPULSE_PROXY_COUNTRY": "south-korea",
+                },
+            )
+
+    def test_missing_dataimpulse_settings_fails_without_exposing_present_secret(self) -> None:
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "DATAIMPULSE_PROXY_PASSWORD, DATAIMPULSE_PROXY_COUNTRY",
+        ) as error:
+            load_dataimpulse_proxy_settings(
+                self.test_repository_root,
+                environment={"DATAIMPULSE_PROXY_USERNAME": "private-login"},
+            )
+
+        self.assertNotIn("private-login", str(error.exception))
 
 
 def _video_ids(count: int) -> list[str]:

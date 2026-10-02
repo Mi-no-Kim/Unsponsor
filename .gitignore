@@ -47,6 +47,7 @@ docs/til/
 
 # 채널 풀 시드 (실제 채널 목록은 비공개 — D-027)
 pipeline/channels.local.json
+pipeline/dataimpulse-canary.local.json
 
 # Claude 작업 임시 출력물 (나중에 삭제)
 /Claude outputs/
