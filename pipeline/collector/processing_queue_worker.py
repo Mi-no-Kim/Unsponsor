@@ -67,20 +67,6 @@ WHERE id = %s
   AND status = 'pending'
 """
 
-_COMPLETE_TRANSCRIPT_SQL = """
-UPDATE video_processing_queue
-SET stage = 'identify',
-    status = 'pending',
-    attempt_count = 0,
-    next_attempt_at = NULL,
-    started_at = NULL,
-    last_error = NULL,
-    updated_at = UTC_TIMESTAMP()
-WHERE id = %s
-  AND stage = 'transcript'
-  AND status = 'processing'
-"""
-
 _FAIL_TRANSCRIPT_FINAL_SQL = """
 UPDATE video_processing_queue
 SET status = 'failed',
@@ -140,23 +126,6 @@ class ProcessingQueueWorker:
             _require_single_row(cursor, "claim transcript job")
             connection.commit()
             return job
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            cursor.close()
-            connection.close()
-
-    def complete_transcript(self, job: ClaimedTranscriptJob) -> None:
-        """자막 저장이 끝난 작업을 identify/pending으로 넘긴다."""
-
-        connection = self._connection_factory.connect()
-        cursor = connection.cursor()
-        try:
-            connection.start_transaction()
-            cursor.execute(_COMPLETE_TRANSCRIPT_SQL, (job.queue_id,))
-            _require_single_row(cursor, "complete transcript job")
-            connection.commit()
         except Exception:
             connection.rollback()
             raise

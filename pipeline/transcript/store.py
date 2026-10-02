@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from collector.processing_queue_worker import ClaimedTranscriptJob
 from common.mysql import MySqlConnectionFactory
 from transcript.codec import (
     TRANSCRIPT_FORMAT,
@@ -17,6 +18,10 @@ from transcript.model import TranscriptExtractionResult, TranscriptSource
 
 class TranscriptStoreError(RuntimeError):
     """자막 저장을 안전하게 완료하지 못한 DB 응답을 나타낸다."""
+
+
+class TranscriptClaimLostError(TranscriptStoreError):
+    """성공 결과를 저장하기 전에 현재 큐 점유를 잃었음을 나타낸다."""
 
 
 _YOUTUBE_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -44,6 +49,22 @@ ON DUPLICATE KEY UPDATE
   updated_at = UTC_TIMESTAMP()
 """
 
+_COMPLETE_CLAIMED_TRANSCRIPT_SQL = """
+UPDATE video_processing_queue
+SET stage = 'identify',
+    status = 'pending',
+    attempt_count = 0,
+    next_attempt_at = NULL,
+    started_at = NULL,
+    last_error = NULL,
+    updated_at = UTC_TIMESTAMP()
+WHERE id = %s
+  AND video_id = %s
+  AND stage = 'transcript'
+  AND status = 'processing'
+  AND attempt_count = %s
+"""
+
 _SELECT_VIDEO_TRANSCRIPT_SQL = """
 SELECT transcript_format, transcript_payload, source
 FROM video_transcripts
@@ -60,7 +81,7 @@ class StoredTranscript:
 
 
 class TranscriptStore:
-    """성공한 자막의 압축 payload와 출처를 원자적으로 교체한다."""
+    """성공 자막 저장과 현재 큐 점유의 완료를 원자적으로 처리한다."""
 
     def __init__(self, connection_factory: MySqlConnectionFactory) -> None:
         self._connection_factory = connection_factory
@@ -139,15 +160,46 @@ class TranscriptStore:
             connection.start_transaction()
             cursor.execute(
                 _UPSERT_VIDEO_TRANSCRIPT_SQL,
-                (
-                    video_id,
-                    TRANSCRIPT_FORMAT,
-                    payload,
-                    source.value,
-                    TRANSCRIPT_FORMAT,
-                    payload,
-                    source.value,
-                ),
+                _upsert_parameters(video_id, source, payload),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+            connection.close()
+
+    def complete_success(
+        self,
+        job: ClaimedTranscriptJob,
+        source: TranscriptSource,
+        result: TranscriptExtractionResult,
+    ) -> None:
+        """현재 점유가 유효할 때만 자막 저장과 큐 완료를 함께 commit한다."""
+
+        _validate_video_id(job.video_id)
+        if not isinstance(source, TranscriptSource):
+            raise ValueError("transcript source must be a supported source")
+        if not result.is_success or result.text is None:
+            raise ValueError("only a successful transcript result can be stored")
+        payload = encode_transcript_payload(result.segments)
+
+        connection = self._connection_factory.connect()
+        cursor = connection.cursor()
+        try:
+            connection.start_transaction()
+            cursor.execute(
+                _COMPLETE_CLAIMED_TRANSCRIPT_SQL,
+                (job.queue_id, job.video_id, job.attempt_count),
+            )
+            if cursor.rowcount != 1:
+                raise TranscriptClaimLostError(
+                    "transcript result was rejected because its claim changed"
+                )
+            cursor.execute(
+                _UPSERT_VIDEO_TRANSCRIPT_SQL,
+                _upsert_parameters(job.video_id, source, payload),
             )
             connection.commit()
         except Exception:
@@ -161,3 +213,17 @@ class TranscriptStore:
 def _validate_video_id(video_id: int) -> None:
     if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id < 1:
         raise ValueError("video_id must be a positive integer")
+
+
+def _upsert_parameters(
+    video_id: int, source: TranscriptSource, payload: bytes
+) -> tuple[object, ...]:
+    return (
+        video_id,
+        TRANSCRIPT_FORMAT,
+        payload,
+        source.value,
+        TRANSCRIPT_FORMAT,
+        payload,
+        source.value,
+    )

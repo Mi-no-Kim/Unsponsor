@@ -29,7 +29,7 @@ from transcript.dataimpulse_proxy import (
     dataimpulse_proxy_secret_values,
 )
 from transcript.model import TranscriptExtractionResult, TranscriptFailure, TranscriptSource
-from transcript.store import TranscriptStore
+from transcript.store import TranscriptClaimLostError, TranscriptStore
 from transcript.ytdlp_extractor import YtDlpTranscriptExtractor
 
 
@@ -46,9 +46,6 @@ class TranscriptQueue(Protocol):
     def claim_next_transcript(self) -> ClaimedTranscriptJob | None:
         """다음 transcript 작업을 점유한다."""
 
-    def complete_transcript(self, job: ClaimedTranscriptJob) -> None:
-        """저장이 끝난 작업을 identify/pending으로 넘긴다."""
-
     def fail_transcript(
         self, job: ClaimedTranscriptJob, failure: QueueFailure
     ) -> FailureTransition:
@@ -64,13 +61,13 @@ class TranscriptPersistence(Protocol):
     def find_youtube_video_id(self, video_id: int) -> str | None:
         """내부 영상 ID의 외부 ID를 반환한다."""
 
-    def replace_success(
+    def complete_success(
         self,
-        video_id: int,
+        job: ClaimedTranscriptJob,
         source: TranscriptSource,
         result: TranscriptExtractionResult,
     ) -> None:
-        """성공 자막을 원자적으로 교체한다."""
+        """현재 점유의 성공 자막 저장과 큐 완료를 원자적으로 처리한다."""
 
 
 @dataclass(frozen=True)
@@ -204,10 +201,12 @@ class TranscriptStageRunner:
         extraction_result: TranscriptExtractionResult,
     ) -> tuple[TranscriptStageRunResult, bool]:
         try:
-            self._persistence.replace_success(
-                job.video_id, source, extraction_result
+            self._persistence.complete_success(job, source, extraction_result)
+        except TranscriptClaimLostError:
+            self._log_safe_error(
+                "discarded a successful transcript because its claim changed"
             )
-            self._queue.complete_transcript(job)
+            return result, False
         except Exception:
             self._log_safe_error("could not persist a successful transcript")
             return (

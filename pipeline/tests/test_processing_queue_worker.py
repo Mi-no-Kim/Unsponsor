@@ -6,9 +6,7 @@ from unittest.mock import Mock
 from collector.processing_queue_worker import (
     ClaimedTranscriptJob,
     ProcessingQueueWorker,
-    ProcessingQueueWorkerError,
     QueueFailure,
-    _COMPLETE_TRANSCRIPT_SQL,
     _FAIL_TRANSCRIPT_FINAL_SQL,
     _MARK_TRANSCRIPT_PROCESSING_SQL,
     _SELECT_NEXT_TRANSCRIPT_JOB_SQL,
@@ -55,20 +53,6 @@ class ProcessingQueueWorkerTests(unittest.TestCase):
         cursor.execute.assert_called_once_with(_SELECT_NEXT_TRANSCRIPT_JOB_SQL)
         connection.commit.assert_called_once_with()
         connection.rollback.assert_not_called()
-
-    def test_complete_transcript_resets_the_next_stage_state(self) -> None:
-        cursor = Mock()
-        connection, factory = _connection_factory(cursor)
-        worker = ProcessingQueueWorker(factory, _queue_settings())
-
-        worker.complete_transcript(ClaimedTranscriptJob(101, 201, 2))
-
-        cursor.execute.assert_called_once_with(_COMPLETE_TRANSCRIPT_SQL, (101,))
-        connection.commit.assert_called_once_with()
-        self.assertIn("stage = 'identify'", _COMPLETE_TRANSCRIPT_SQL)
-        self.assertIn("status = 'pending'", _COMPLETE_TRANSCRIPT_SQL)
-        self.assertIn("attempt_count = 0", _COMPLETE_TRANSCRIPT_SQL)
-        self.assertIn("last_error = NULL", _COMPLETE_TRANSCRIPT_SQL)
 
     def test_fail_transcript_retries_after_the_configured_exponential_backoff(self) -> None:
         cursor = Mock()
@@ -162,20 +146,6 @@ class ProcessingQueueWorkerTests(unittest.TestCase):
             _SELECT_STUCK_TRANSCRIPT_JOB_SQL.format(stale_after_seconds=1800)
         )
         connection.commit.assert_called_once_with()
-
-    def test_state_transition_rolls_back_when_its_claim_is_no_longer_processing(self) -> None:
-        cursor = Mock()
-        connection, factory = _connection_factory(cursor)
-        cursor.rowcount = 0
-        worker = ProcessingQueueWorker(factory, _queue_settings())
-
-        with self.assertRaisesRegex(ProcessingQueueWorkerError, "state changed"):
-            worker.complete_transcript(ClaimedTranscriptJob(101, 201, 0))
-
-        connection.commit.assert_not_called()
-        connection.rollback.assert_called_once_with()
-        cursor.close.assert_called_once_with()
-        connection.close.assert_called_once_with()
 
     def test_rejects_failure_codes_that_could_contain_sensitive_content(self) -> None:
         with self.assertRaisesRegex(ValueError, "safe identifier"):

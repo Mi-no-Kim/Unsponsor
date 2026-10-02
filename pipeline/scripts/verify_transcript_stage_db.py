@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Protocol
 
-from collector.processing_queue_worker import ProcessingQueueWorker
+from collector.processing_queue_worker import (
+    ClaimedTranscriptJob,
+    ProcessingQueueWorker,
+)
 from common.config import MySqlSettings, QueueSettings
 from common.mysql import MySqlConnectionFactory
 from transcript.fixture_dataset import (
@@ -28,7 +31,7 @@ from transcript.model import (
     TranscriptSource,
 )
 from transcript.stage_runner import TranscriptStageRunner
-from transcript.store import TranscriptStore
+from transcript.store import TranscriptClaimLostError, TranscriptStore
 
 
 class W027VerificationError(RuntimeError):
@@ -58,6 +61,22 @@ class _FixedExtractor:
 class _DisposableMySql:
     container_name: str
     settings: MySqlSettings
+
+
+class _ShortLockTimeoutConnectionFactory:
+    """검증용 저장 연결에만 짧은 InnoDB 행 잠금 제한을 적용한다."""
+
+    def __init__(self, factory: MySqlConnectionFactory) -> None:
+        self._factory = factory
+
+    def connect(self):
+        connection = self._factory.connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SET SESSION innodb_lock_wait_timeout = 1")
+        finally:
+            cursor.close()
+        return connection
 
 
 _LEGACY_FLYWAY_VERSIONS = ("1", "2", "3", "4", "5")
@@ -669,6 +688,131 @@ def _verify_stage_transitions(
     _assert_single_transcript(factory, replacement_video)
     checks.append("latest_fixture_replaces_payload_atomically")
 
+    late_first_video, late_first_a, late_first_b = _prepare_reclaimed_job(
+        factory,
+        queue,
+        store,
+        channel_id,
+        "late_worker_first",
+        dataset.library_success,
+    )
+    _assert_claim_rejected(
+        store,
+        late_first_a,
+        TranscriptSource.YT_DLP,
+        dataset.ytdlp_success,
+    )
+    _assert_queue_state(
+        factory,
+        late_first_video,
+        "transcript",
+        "processing",
+        "worker_stalled",
+        1,
+    )
+    _assert_transcript_result(
+        factory,
+        late_first_video,
+        TranscriptSource.LIBRARY,
+        dataset.library_success,
+    )
+    store.complete_success(
+        late_first_b,
+        TranscriptSource.YT_DLP,
+        dataset.ytdlp_success,
+    )
+    _assert_queue_state(
+        factory, late_first_video, "identify", "pending", None, 0
+    )
+    _assert_transcript_result(
+        factory,
+        late_first_video,
+        TranscriptSource.YT_DLP,
+        dataset.ytdlp_success,
+    )
+    checks.append("reclaimed_job_rejects_late_worker_before_current_completion")
+
+    current_first_video, current_first_a, current_first_b = _prepare_reclaimed_job(
+        factory,
+        queue,
+        store,
+        channel_id,
+        "current_worker_first",
+        dataset.library_success,
+    )
+    store.complete_success(
+        current_first_b,
+        TranscriptSource.YT_DLP,
+        dataset.ytdlp_success,
+    )
+    _assert_claim_rejected(
+        store,
+        current_first_a,
+        TranscriptSource.LIBRARY,
+        dataset.library_success,
+    )
+    _assert_queue_state(
+        factory, current_first_video, "identify", "pending", None, 0
+    )
+    _assert_transcript_result(
+        factory,
+        current_first_video,
+        TranscriptSource.YT_DLP,
+        dataset.ytdlp_success,
+    )
+    checks.append("reclaimed_job_preserves_current_worker_completion")
+
+    rollback_video = _insert_video_and_queue(
+        factory, channel_id, "completion_rollback"
+    )
+    store.replace_success(
+        rollback_video,
+        TranscriptSource.LIBRARY,
+        dataset.library_success,
+    )
+    rollback_job = queue.claim_next_transcript()
+    _require(rollback_job is not None and rollback_job.video_id == rollback_video)
+    lock_connection = factory.connect()
+    lock_cursor = lock_connection.cursor()
+    try:
+        lock_connection.start_transaction()
+        lock_cursor.execute(
+            """
+            SELECT video_id
+            FROM video_transcripts
+            WHERE video_id = %s
+            FOR UPDATE
+            """,
+            (rollback_video,),
+        )
+        _require(lock_cursor.fetchone() == (rollback_video,))
+        try:
+            TranscriptStore(
+                _ShortLockTimeoutConnectionFactory(factory)
+            ).complete_success(
+                rollback_job,
+                TranscriptSource.YT_DLP,
+                dataset.ytdlp_success,
+            )
+        except Exception as error:
+            _require(getattr(error, "errno", None) == 1205)
+        else:
+            raise AssertionError("W-027 database verification failed")
+    finally:
+        lock_connection.rollback()
+        lock_cursor.close()
+        lock_connection.close()
+    _assert_queue_state(
+        factory, rollback_video, "transcript", "processing", None, 0
+    )
+    _assert_transcript_result(
+        factory,
+        rollback_video,
+        TranscriptSource.LIBRARY,
+        dataset.library_success,
+    )
+    checks.append("completion_and_payload_rollback_together")
+
     rate_limited_video = _insert_video_and_queue(
         factory, channel_id, "rate_limited"
     )
@@ -796,8 +940,55 @@ def _verification_youtube_video_id(label: str) -> str:
         "replacement": "verify00007",
         "migration_library": "verify00009",
         "migration_ytdlp": "verify00010",
+        "late_worker_first": "verify00011",
+        "current_worker_first": "verify00012",
+        "completion_rollback": "verify00013",
     }
     return values[label]
+
+
+def _prepare_reclaimed_job(
+    factory: MySqlConnectionFactory,
+    queue: ProcessingQueueWorker,
+    store: TranscriptStore,
+    channel_id: int,
+    label: str,
+    original_result: TranscriptExtractionResult,
+) -> tuple[int, ClaimedTranscriptJob, ClaimedTranscriptJob]:
+    video_id = _insert_video_and_queue(factory, channel_id, label)
+    store.replace_success(video_id, TranscriptSource.LIBRARY, original_result)
+    first_job = queue.claim_next_transcript()
+    _require(first_job is not None and first_job.video_id == video_id)
+    _mark_queue_stuck(factory, video_id)
+    recovery = queue.recover_one_stuck_transcript()
+    _require(
+        recovery is not None
+        and recovery.queue_id == first_job.queue_id
+        and recovery.attempt_count == first_job.attempt_count + 1
+        and recovery.status == "pending"
+    )
+    _make_queue_retry_ready(factory, video_id)
+    current_job = queue.claim_next_transcript()
+    _require(
+        current_job is not None
+        and current_job.video_id == video_id
+        and current_job.queue_id == first_job.queue_id
+        and current_job.attempt_count == first_job.attempt_count + 1
+    )
+    return video_id, first_job, current_job
+
+
+def _assert_claim_rejected(
+    store: TranscriptStore,
+    job: ClaimedTranscriptJob,
+    source: TranscriptSource,
+    result: TranscriptExtractionResult,
+) -> None:
+    try:
+        store.complete_success(job, source, result)
+    except TranscriptClaimLostError:
+        return
+    raise AssertionError("W-027 database verification failed")
 
 
 def _mark_queue_stuck(factory: MySqlConnectionFactory, video_id: int) -> None:
@@ -808,6 +999,22 @@ def _mark_queue_stuck(factory: MySqlConnectionFactory, video_id: int) -> None:
         SET status = 'processing',
             started_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE)
         WHERE video_id = %s
+        """,
+        (video_id,),
+    )
+
+
+def _make_queue_retry_ready(
+    factory: MySqlConnectionFactory, video_id: int
+) -> None:
+    _execute(
+        factory,
+        """
+        UPDATE video_processing_queue
+        SET next_attempt_at = UTC_TIMESTAMP()
+        WHERE video_id = %s
+          AND stage = 'transcript'
+          AND status = 'pending'
         """,
         (video_id,),
     )
