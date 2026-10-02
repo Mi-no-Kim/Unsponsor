@@ -57,7 +57,7 @@ class UnsponsorBackendApplicationTests {
 				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("1", "2", "3"), appliedVersions);
+		assertEquals(List.of("1", "2", "3", "4", "5", "6"), appliedVersions);
 	}
 
 	@Test
@@ -123,6 +123,66 @@ class UnsponsorBackendApplicationTests {
 				String.class);
 
 		assertEquals(V3_TABLES, new HashSet<>(tableNames));
+	}
+
+	@Test
+	void removesTheLegacyTranscriptSegmentTable() {
+		List<String> tableNames = jdbcTemplate.queryForList(
+				"""
+				SELECT table_name
+				FROM information_schema.tables
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcript_segments'
+				""",
+				String.class);
+
+		assertEquals(Set.of(), new HashSet<>(tableNames));
+	}
+
+	@Test
+	void givesTranscriptsTheirCompactPayloadColumns() {
+		List<String> columnNames = jdbcTemplate.queryForList(
+				"""
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcripts'
+				""",
+				String.class);
+
+		assertEquals(
+				Set.of("video_id", "transcript_format", "transcript_payload", "source", "created_at", "updated_at"),
+				new HashSet<>(columnNames));
+	}
+
+	@Test
+	void limitsTranscriptPayloadsToTheVersionedCompactFormat() {
+		List<String> formatValues = jdbcTemplate.queryForList(
+				"""
+				SELECT column_type
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcripts'
+				  AND column_name = 'transcript_format'
+				""",
+				String.class);
+
+		assertEquals(List.of("enum('gzip_json_v1')"), formatValues);
+	}
+
+	@Test
+	void limitsTranscriptSourcesToCurrentCaptionPaths() {
+		List<String> sourceValues = jdbcTemplate.queryForList(
+				"""
+				SELECT column_type
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcripts'
+				  AND column_name = 'source'
+				""",
+				String.class);
+
+		assertEquals(List.of("enum('library','yt_dlp')"), sourceValues);
 	}
 
 	@Test
