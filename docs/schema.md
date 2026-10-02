@@ -5,7 +5,6 @@
 ## 공통 규칙
 
 - 문자셋: utf8mb4 (다국어 제목·설명·이모지 대응)
-- 시간: 시점을 나타내는 `DATETIME` 값은 UTC로 저장한다. API·관리자 화면 등 사람에게 시각을 표시하는 경계에서만 `Asia/Seoul`(KST)로 변환하며, DB 서버 시간대나 저장값 자체를 표시 목적에 맞춰 바꾸지 않는다 (D-052).
 - PK: 각 테이블 `id` BIGINT AUTO_INCREMENT. 외부 시스템 ID(YouTube 등)는 별도 UNIQUE 컬럼으로 보관.
 - `created_at`/`updated_at`은 테이블 성격에 따라 둔다: 행이 수정되는 테이블은 둘 다, 추가만 되고 수정되지 않는 테이블(로그·증거 등)은 `created_at`만, 정적 룩업 테이블(`languages`)과 N:M 연결 테이블(`point_aspects`)은 두지 않는다.
 - 고정된 값 집합이 필요한 컬럼은 그 컬럼에 쓰는 주체에 따라 정한다 (D-035). Spring만 쓰면 VARCHAR + Java enum으로 앱에서 강제한다. Python 파이프라인도 쓰면 DB가 값을 강제한다 — 값 목록이 고정이거나 드물게만 늘면 네이티브 ENUM(D-019), 계속 늘어날 수 있으면 룩업 테이블 + FK(예: language, D-021).
@@ -119,18 +118,13 @@
 
 ### video_transcripts
 
-| 컬럼               | 타입                      | 설명                                                                                                     |
-| ------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------- |
-| video_id           | BIGINT PK, FK → videos.id | 영상 1개당 자막 1건 (1:1)                                                                                |
-| transcript_format  | ENUM('gzip_json_v1')      | payload 직렬화·압축 계약 버전 (D-048 v2)                                                                 |
-| transcript_payload | MEDIUMBLOB                | `[start_ms,duration_ms,text]` 세그먼트 배열의 compact JSON을 gzip 압축한 canonical 원문. 1~8 MiB (D-018) |
-| source             | ENUM('library','yt_dlp')  | 확보 경로 (D-015 v7). 새 경로를 도입하면 ALTER로 값을 추가한다 (D-035)                                   |
-| created_at         | DATETIME                  |                                                                                                          |
-| updated_at         | DATETIME                  |                                                                                                          |
-
-- 일반 텍스트는 payload를 검증·해제한 뒤 세그먼트 `text`를 순서대로 줄바꿈 결합해 파생한다.
-- 시간 구간은 각 세그먼트의 `start_ms`와 `duration_ms`로 복원한다.
-- `video_transcript_segments`와 `raw_text`는 V6에서 canonical payload로 변환한 뒤 제거했다.
+| 컬럼       | 타입                        | 설명                                                                      |
+| ---------- | --------------------------- | ------------------------------------------------------------------------- |
+| video_id   | BIGINT PK, FK → videos.id   | 영상 1개당 자막 1건 (1:1)                                                 |
+| raw_text   | LONGTEXT                    | 자막 원문(STT 결과 포함). 화면에 노출하지 않음 (D-018)                    |
+| source     | ENUM('library','bs4','stt') | 확보 경로 (D-015). Selenium 폴백이 추가되면 ALTER로 값을 추가한다 (D-035) |
+| created_at | DATETIME                    |                                                                           |
+| updated_at | DATETIME                    |                                                                           |
 
 ### ad_segments
 
@@ -261,7 +255,7 @@
 | --------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | id              | BIGINT PK                                                      |                                                                                                                                       |
 | video_id        | BIGINT UNIQUE FK → videos.id                                   | 영상 1개당 큐 항목 1개 — 중복 등록 방지                                                                                               |
-| stage           | ENUM('transcript','identify','summarize') DEFAULT 'transcript' | 지금 처리할 단계. `transcript`=자막 확보, `identify`=LLM ① 호출 + 매칭, `summarize`=LLM ② 호출 (D-016, D-019)                         |
+| stage           | ENUM('transcript','identify','summarize') DEFAULT 'transcript' | 지금 처리할 단계. `transcript`=자막/STT, `identify`=LLM ① 호출 + 매칭, `summarize`=LLM ② 호출 (D-016, D-019)                          |
 | status          | ENUM('pending','processing','done','failed')                   | 지금 단계(`stage`)의 상태. 값 목록이 고정돼 늘어날 일이 없어 네이티브 ENUM 사용 — Python/Spring 어느 쪽이 쓰든 DB가 값을 강제 (D-019) |
 | attempt_count   | INT DEFAULT 0                                                  | 지금까지 시도 횟수                                                                                                                    |
 | next_attempt_at | DATETIME NULL                                                  | 이 시각 이후에만 재시도 가능(백오프). NULL이면 즉시 가능                                                                              |
