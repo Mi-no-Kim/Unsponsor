@@ -27,7 +27,7 @@ class TranscriptFixtureDatasetTests(unittest.TestCase):
             self.assertEqual(len(dataset.ytdlp_success.segments), 2)
 
     def test_rejects_each_payload_changed_after_capture(self) -> None:
-        for filename in ("api-success.json", "yt-dlp-success.json3"):
+        for filename in ("api-success.json", "yt-dlp-success.srv1"):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 _write_dataset(root)
@@ -88,15 +88,24 @@ class TranscriptFixtureDatasetTests(unittest.TestCase):
             ):
                 TranscriptFixtureDataset.load(root)
 
-    def test_rejects_malformed_json3_after_valid_checksum(self) -> None:
+    def test_rejects_malformed_srv1_after_valid_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            _write_dataset(root, ytdlp_payload=b'{"events":[]}')
+            _write_dataset(root, ytdlp_payload=b"<transcript />")
 
             with self.assertRaisesRegex(
                 TranscriptFixtureDatasetError, "could not be normalized"
             ):
                 TranscriptFixtureDataset.load(root)
+
+    def test_keeps_loading_legacy_json3_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_dataset(root, schema_version=3)
+
+            dataset = TranscriptFixtureDataset.load(root)
+
+            self.assertEqual(dataset.ytdlp_success.text, "yt-dlp first\nyt-dlp second")
 
 
 def _library_payload() -> bytes:
@@ -128,20 +137,34 @@ def _json3_payload() -> bytes:
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
+def _srv1_payload() -> bytes:
+    return (
+        '<transcript><text start="0" dur="1">yt-dlp first</text>'
+        '<text start="1" dur="1.5">yt-dlp second</text></transcript>'
+    ).encode("utf-8")
+
+
 def _write_dataset(
     root: Path,
     *,
     library_payload: bytes | None = None,
     ytdlp_payload: bytes | None = None,
+    schema_version: int = 4,
 ) -> None:
     library_content = _library_payload() if library_payload is None else library_payload
-    ytdlp_content = _json3_payload() if ytdlp_payload is None else ytdlp_payload
+    ytdlp_content = (
+        _json3_payload() if schema_version == 3 else _srv1_payload()
+    ) if ytdlp_payload is None else ytdlp_payload
+    ytdlp_filename = (
+        "yt-dlp-success.json3" if schema_version == 3 else "yt-dlp-success.srv1"
+    )
+    ytdlp_format = "json3" if schema_version == 3 else "srv1"
     (root / "api-success.json").write_bytes(library_content)
-    (root / "yt-dlp-success.json3").write_bytes(ytdlp_content)
+    (root / ytdlp_filename).write_bytes(ytdlp_content)
     _write_manifest(
         root,
         {
-            "schema_version": 3,
+            "schema_version": schema_version,
             "fixtures": {
                 "library_success": {
                     "file": "api-success.json",
@@ -149,8 +172,8 @@ def _write_dataset(
                     "sha256": hashlib.sha256(library_content).hexdigest(),
                 },
                 "ytdlp_success": {
-                    "file": "yt-dlp-success.json3",
-                    "format": "json3",
+                    "file": ytdlp_filename,
+                    "format": ytdlp_format,
                     "sha256": hashlib.sha256(ytdlp_content).hexdigest(),
                 },
             },

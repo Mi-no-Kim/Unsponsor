@@ -71,6 +71,22 @@ class _Downloader(AbstractContextManager["_Downloader"]):
                 ),
                 encoding="utf-8",
             )
+        if self.action == "write_srv1":
+            directory = Path(self.options["paths"]["home"])
+            (directory / "video000001.ko.srv1").write_text(
+                """<?xml version="1.0" encoding="utf-8" ?>
+<transcript>
+<text start="1.250" dur="0.500"> First &amp;\nfragment </text>
+<text start="2" dur="0.375"> second   fragment </text>
+</transcript>""",
+                encoding="utf-8",
+            )
+        if self.action == "write_invalid_srv1":
+            directory = Path(self.options["paths"]["home"])
+            (directory / "video000001.ko.srv1").write_text(
+                '<transcript><text start="1">private transcript</text></transcript>',
+                encoding="utf-8",
+            )
         if self.action == "write_invalid_json3":
             directory = Path(self.options["paths"]["home"])
             (directory / "video000001.ko.json3").write_text(
@@ -116,8 +132,8 @@ class _UnavailableProviderSession(AbstractContextManager["_UnavailableProviderSe
 
 
 class YtDlpTranscriptExtractorTests(unittest.TestCase):
-    def test_extract_normalizes_a_token_free_json3_subtitle(self) -> None:
-        downloader_factory = _DownloaderFactory("write_json3")
+    def test_extract_prefers_and_normalizes_a_token_free_srv1_subtitle(self) -> None:
+        downloader_factory = _DownloaderFactory("write_srv1")
 
         result = YtDlpTranscriptExtractor(
             ytdlp_factory=downloader_factory
@@ -127,7 +143,7 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             result,
             TranscriptExtractionResult.succeeded(
                 (
-                    TranscriptSegment(0, 1250, 1750, "First fragment"),
+                    TranscriptSegment(0, 1250, 1750, "First & fragment"),
                     TranscriptSegment(1, 2000, 2375, "second fragment"),
                 )
             ),
@@ -142,8 +158,24 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
         self.assertEqual(options["fragment_retries"], 0)
         self.assertEqual(options["sleep_interval_requests"], 2.0)
         self.assertEqual(options["sleep_interval_subtitles"], 35.0)
+        self.assertEqual(options["subtitlesformat"], "srv1/json3")
         self.assertNotIn("cookiefile", options)
         self.assertFalse(Path(options["paths"]["home"]).exists())
+
+    def test_extract_uses_json3_as_a_compatible_fallback(self) -> None:
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=_DownloaderFactory("write_json3")
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.succeeded(
+                (
+                    TranscriptSegment(0, 1250, 1750, "First fragment"),
+                    TranscriptSegment(1, 2000, 2375, "second fragment"),
+                )
+            ),
+        )
 
     def test_extract_passes_an_explicit_cookie_file_only_to_ytdlp(self) -> None:
         downloader_factory = _DownloaderFactory("write_json3")
@@ -289,6 +321,17 @@ class YtDlpTranscriptExtractorTests(unittest.TestCase):
             TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
         )
         self.assertNotIn("not json", repr(result))
+
+    def test_extract_rejects_malformed_srv1_without_exposing_its_contents(self) -> None:
+        result = YtDlpTranscriptExtractor(
+            ytdlp_factory=_DownloaderFactory("write_invalid_srv1")
+        ).extract("video000001")
+
+        self.assertEqual(
+            result,
+            TranscriptExtractionResult.failed(TranscriptFailure.INVALID_RESPONSE),
+        )
+        self.assertNotIn("private transcript", repr(result))
 
     def test_extract_rejects_json3_text_without_timestamps(self) -> None:
         downloader_factory = _DownloaderFactory("write_json3_without_timestamps")

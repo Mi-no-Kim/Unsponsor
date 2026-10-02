@@ -10,7 +10,7 @@ from pathlib import Path
 
 from transcript.library_extractor import _normalize_response
 from transcript.model import TranscriptExtractionResult, TranscriptSegment
-from transcript.ytdlp_extractor import _normalize_json3
+from transcript.ytdlp_extractor import _normalize_json3, _normalize_srv1
 
 
 class TranscriptFixtureDatasetError(ValueError):
@@ -41,7 +41,8 @@ class TranscriptFixtureDataset:
             "fixtures",
         }:
             raise TranscriptFixtureDatasetError("fixture manifest contract is invalid")
-        if manifest["schema_version"] != 3:
+        schema_version = manifest["schema_version"]
+        if schema_version not in (3, 4):
             raise TranscriptFixtureDatasetError("fixture manifest version is unsupported")
 
         fixtures = manifest["fixtures"]
@@ -58,11 +59,16 @@ class TranscriptFixtureDataset:
             payload_format=_LIBRARY_FIXTURE_FORMAT,
             label="library",
         )
+        ytdlp_filename, ytdlp_format = (
+            (_YTDLP_JSON3_FIXTURE_FILENAME, "json3")
+            if schema_version == 3
+            else (_YTDLP_SRV1_FIXTURE_FILENAME, "srv1")
+        )
         ytdlp_path = _verified_payload_path(
             root,
             fixtures["ytdlp_success"],
-            filename=_YTDLP_FIXTURE_FILENAME,
-            payload_format="json3",
+            filename=ytdlp_filename,
+            payload_format=ytdlp_format,
             label="yt-dlp",
         )
 
@@ -81,9 +87,12 @@ class TranscriptFixtureDataset:
                 "library fixture could not be normalized"
             ) from error
         try:
-            ytdlp_result = TranscriptExtractionResult.succeeded(
+            ytdlp_segments = (
                 _normalize_json3(ytdlp_path)
+                if schema_version == 3
+                else _normalize_srv1(ytdlp_path)
             )
+            ytdlp_result = TranscriptExtractionResult.succeeded(ytdlp_segments)
         except (
             OSError,
             UnicodeDecodeError,
@@ -109,7 +118,8 @@ class _LibraryFixtureSnippet:
 
 _LIBRARY_FIXTURE_FILENAME = "api-success.json"
 _LIBRARY_FIXTURE_FORMAT = "youtube-transcript-api-snippets"
-_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3"
+_YTDLP_JSON3_FIXTURE_FILENAME = "yt-dlp-success.json3"
+_YTDLP_SRV1_FIXTURE_FILENAME = "yt-dlp-success.srv1"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 

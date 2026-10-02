@@ -119,31 +119,18 @@
 
 ### video_transcripts
 
-| 컬럼       | 타입                      | 설명                                                                   |
-| ---------- | ------------------------- | ---------------------------------------------------------------------- |
-| video_id   | BIGINT PK, FK → videos.id | 영상 1개당 자막 1건 (1:1)                                              |
-| raw_text   | LONGTEXT                  | 확보한 자막 원문. 화면에 노출하지 않음 (D-018)                         |
-| source     | ENUM('library','yt_dlp')  | 확보 경로 (D-015 v3). 새 경로를 도입하면 ALTER로 값을 추가한다 (D-035) |
-| created_at | DATETIME                  |                                                                        |
-| updated_at | DATETIME                  |                                                                        |
+| 컬럼               | 타입                      | 설명                                                                                                     |
+| ------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| video_id           | BIGINT PK, FK → videos.id | 영상 1개당 자막 1건 (1:1)                                                                                |
+| transcript_format  | ENUM('gzip_json_v1')      | payload 직렬화·압축 계약 버전 (D-048 v2)                                                                 |
+| transcript_payload | MEDIUMBLOB                | `[start_ms,duration_ms,text]` 세그먼트 배열의 compact JSON을 gzip 압축한 canonical 원문. 1~8 MiB (D-018) |
+| source             | ENUM('library','yt_dlp')  | 확보 경로 (D-015 v7). 새 경로를 도입하면 ALTER로 값을 추가한다 (D-035)                                   |
+| created_at         | DATETIME                  |                                                                                                          |
+| updated_at         | DATETIME                  |                                                                                                          |
 
-### video_transcript_segments
-
-`video_transcripts.raw_text`를 시간 순서대로 재현할 수 있는 자막 조각. 원문과 마찬가지로
-사용자 화면에 노출하지 않는다(D-018).
-
-| 컬럼       | 타입                  | 설명                                                                |
-| ---------- | --------------------- | ------------------------------------------------------------------- |
-| id         | BIGINT PK             |                                                                     |
-| video_id   | BIGINT FK → videos.id | 세그먼트가 속한 영상                                                |
-| sequence   | INT UNSIGNED          | 영상 안의 0부터 시작하는 자막 순서                                  |
-| start_ms   | INT UNSIGNED          | 구간 시작 시점(밀리초)                                              |
-| end_ms     | INT UNSIGNED          | 구간 종료 시점(밀리초). `start_ms`보다 커야 한다                    |
-| text       | TEXT                  | 공백을 정규화한 조각 원문. `sequence` 순서로 줄바꿈 결합해 재현한다 |
-| created_at | DATETIME              |                                                                     |
-
-- UNIQUE(video_id, sequence) — 영상 안에서 같은 순서의 세그먼트가 중복되지 않도록 한다.
-- 파이프라인은 영상 하나의 세그먼트를 삭제·삽입하는 하나의 트랜잭션에서 최신 성공 결과로 교체한다.
+- 일반 텍스트는 payload를 검증·해제한 뒤 세그먼트 `text`를 순서대로 줄바꿈 결합해 파생한다.
+- 시간 구간은 각 세그먼트의 `start_ms`와 `duration_ms`로 복원한다.
+- `video_transcript_segments`와 `raw_text`는 V6에서 canonical payload로 변환한 뒤 제거했다.
 
 ### ad_segments
 

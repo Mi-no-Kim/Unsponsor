@@ -129,6 +129,7 @@ class VerifyTranscriptStageDatabaseTests(unittest.TestCase):
         self.assertEqual(
             flyway_environment["SPRING_MAIN_WEB_APPLICATION_TYPE"], "none"
         )
+        self.assertEqual(flyway_environment["SPRING_FLYWAY_TARGET"], "6")
 
     def test_cleanup_rejects_unscoped_names_and_mismatched_labels(self) -> None:
         with patch("scripts.verify_transcript_stage_db._run_docker") as run_docker:

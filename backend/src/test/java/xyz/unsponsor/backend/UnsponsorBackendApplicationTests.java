@@ -40,8 +40,7 @@ class UnsponsorBackendApplicationTests {
 			"product_aspect_stats",
 			"aspect_candidates",
 			"aspect_candidate_evidence");
-	private static final Set<String> V4_TABLES = Set.of("video_transcript_segments");
-	private static final Set<String> SCHEMA_TABLES = Stream.of(V1_TABLES, V2_TABLES, V3_TABLES, V4_TABLES)
+	private static final Set<String> SCHEMA_TABLES = Stream.of(V1_TABLES, V2_TABLES, V3_TABLES)
 			.flatMap(Set::stream)
 			.collect(Collectors.toUnmodifiableSet());
 
@@ -58,7 +57,7 @@ class UnsponsorBackendApplicationTests {
 				"SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
 				String.class);
 
-		assertEquals(List.of("1", "2", "3", "4", "5"), appliedVersions);
+		assertEquals(List.of("1", "2", "3", "4", "5", "6"), appliedVersions);
 	}
 
 	@Test
@@ -127,7 +126,7 @@ class UnsponsorBackendApplicationTests {
 	}
 
 	@Test
-	void createsV4TranscriptSegmentTable() {
+	void removesTheLegacyTranscriptSegmentTable() {
 		List<String> tableNames = jdbcTemplate.queryForList(
 				"""
 				SELECT table_name
@@ -137,23 +136,38 @@ class UnsponsorBackendApplicationTests {
 				""",
 				String.class);
 
-		assertEquals(V4_TABLES, new HashSet<>(tableNames));
+		assertEquals(Set.of(), new HashSet<>(tableNames));
 	}
 
 	@Test
-	void givesTranscriptSegmentsTheirTimelineColumns() {
+	void givesTranscriptsTheirCompactPayloadColumns() {
 		List<String> columnNames = jdbcTemplate.queryForList(
 				"""
 				SELECT column_name
 				FROM information_schema.columns
 				WHERE table_schema = DATABASE()
-				  AND table_name = 'video_transcript_segments'
+				  AND table_name = 'video_transcripts'
 				""",
 				String.class);
 
 		assertEquals(
-				Set.of("id", "video_id", "sequence", "start_ms", "end_ms", "text", "created_at"),
+				Set.of("video_id", "transcript_format", "transcript_payload", "source", "created_at", "updated_at"),
 				new HashSet<>(columnNames));
+	}
+
+	@Test
+	void limitsTranscriptPayloadsToTheVersionedCompactFormat() {
+		List<String> formatValues = jdbcTemplate.queryForList(
+				"""
+				SELECT column_type
+				FROM information_schema.columns
+				WHERE table_schema = DATABASE()
+				  AND table_name = 'video_transcripts'
+				  AND column_name = 'transcript_format'
+				""",
+				String.class);
+
+		assertEquals(List.of("enum('gzip_json_v1')"), formatValues);
 	}
 
 	@Test

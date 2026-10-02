@@ -60,7 +60,8 @@ class _DisposableMySql:
     settings: MySqlSettings
 
 
-_EXPECTED_FLYWAY_VERSIONS = ("1", "2", "3", "4", "5")
+_LEGACY_FLYWAY_VERSIONS = ("1", "2", "3", "4", "5")
+_EXPECTED_FLYWAY_VERSIONS = (*_LEGACY_FLYWAY_VERSIONS, "6")
 _DOCKER_PORT_PATTERN = re.compile(r"^127\.0\.0\.1:(?P<port>[0-9]{1,5})$")
 _CONTAINER_NAME_PATTERN = re.compile(r"^unsponsor-w027-[0-9a-f]{12}$")
 _NAMED_PIPE_PATTERN = re.compile(r"^npipe:////\./pipe/[a-z0-9_.-]+$")
@@ -91,13 +92,17 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         with _disposable_mysql(timings) as database:
             started_at = time.monotonic()
-            _apply_backend_flyway(repository_root, database.settings)
+            _apply_backend_flyway(repository_root, database.settings, target="5")
             factory = MySqlConnectionFactory(database.settings)
-            _assert_flyway_versions(factory)
+            _assert_flyway_versions(factory, _LEGACY_FLYWAY_VERSIONS)
+            migrated_rows = _seed_legacy_transcripts(factory, dataset)
+            _apply_backend_flyway(repository_root, database.settings, target="6")
+            _assert_flyway_versions(factory, _EXPECTED_FLYWAY_VERSIONS)
             timings["flyway"] = _elapsed(started_at)
 
             started_at = time.monotonic()
-            checks = _verify_stage_transitions(factory, dataset)
+            checks = _assert_legacy_transcripts_migrated(factory, migrated_rows)
+            checks.extend(_verify_stage_transitions(factory, dataset))
             timings["database_checks"] = _elapsed(started_at)
     except TranscriptFixtureDatasetError:
         _print_failure("fixture_invalid")
@@ -375,7 +380,7 @@ def _validate_container_name(container_name: str) -> None:
 
 
 def _apply_backend_flyway(
-    repository_root: Path, settings: MySqlSettings
+    repository_root: Path, settings: MySqlSettings, *, target: str
 ) -> None:
     backend_root = repository_root / "backend"
     wrapper = backend_root / ("gradlew.bat" if os.name == "nt" else "gradlew")
@@ -389,7 +394,7 @@ def _apply_backend_flyway(
         completed = subprocess.run(
             command,
             cwd=backend_root,
-            env=_flyway_environment(settings, os.environ),
+            env=_flyway_environment(settings, os.environ, target=target),
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -402,7 +407,7 @@ def _apply_backend_flyway(
 
 
 def _flyway_environment(
-    settings: MySqlSettings, base: Mapping[str, str]
+    settings: MySqlSettings, base: Mapping[str, str], *, target: str = "6"
 ) -> dict[str, str]:
     environment = dict(base)
     environment.update(
@@ -414,12 +419,15 @@ def _flyway_environment(
             "MYSQL_PASSWORD": settings.password,
             "SPRING_MAIN_WEB_APPLICATION_TYPE": "none",
             "SPRING_MAIN_BANNER_MODE": "off",
+            "SPRING_FLYWAY_TARGET": target,
         }
     )
     return environment
 
 
-def _assert_flyway_versions(factory: MySqlConnectionFactory) -> None:
+def _assert_flyway_versions(
+    factory: MySqlConnectionFactory, expected: tuple[str, ...]
+) -> None:
     rows = _fetch_all(
         factory,
         """
@@ -430,7 +438,116 @@ def _assert_flyway_versions(factory: MySqlConnectionFactory) -> None:
         """,
         (),
     )
-    _require(tuple(row[0] for row in rows) == _EXPECTED_FLYWAY_VERSIONS)
+    _require(tuple(row[0] for row in rows) == expected)
+
+
+def _seed_legacy_transcripts(
+    factory: MySqlConnectionFactory, dataset: TranscriptFixtureDataset
+) -> tuple[tuple[int, TranscriptSource, TranscriptExtractionResult], ...]:
+    channel_id = _insert_row(
+        factory,
+        """
+        INSERT INTO channels (
+          youtube_channel_id, uploads_playlist_id, name, language_code, created_at, updated_at
+        )
+        VALUES (%s, %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+        """,
+        ("UC" + "c" * 22, "UU" + "d" * 32, "migration", "ko"),
+    )
+    rows = (
+        (
+            _insert_video(factory, channel_id, "migration_library"),
+            TranscriptSource.LIBRARY,
+            dataset.library_success,
+        ),
+        (
+            _insert_video(factory, channel_id, "migration_ytdlp"),
+            TranscriptSource.YT_DLP,
+            dataset.ytdlp_success,
+        ),
+    )
+    for video_id, source, result in rows:
+        _seed_legacy_transcript(factory, video_id, source, result)
+    return rows
+
+
+def _seed_legacy_transcript(
+    factory: MySqlConnectionFactory,
+    video_id: int,
+    source: TranscriptSource,
+    result: TranscriptExtractionResult,
+) -> None:
+    connection = factory.connect()
+    cursor = connection.cursor()
+    try:
+        connection.start_transaction()
+        cursor.execute(
+            """
+            INSERT INTO video_transcripts (
+              video_id, raw_text, source, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+            """,
+            (video_id, result.text, source.value),
+        )
+        cursor.executemany(
+            """
+            INSERT INTO video_transcript_segments (
+              video_id, sequence, start_ms, end_ms, text, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())
+            """,
+            tuple(
+                (
+                    video_id,
+                    segment.sequence,
+                    segment.start_ms,
+                    segment.end_ms,
+                    segment.text,
+                )
+                for segment in result.segments
+            ),
+        )
+        if cursor.rowcount != len(result.segments):
+            raise W027VerificationError("legacy_seed_failed")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def _assert_legacy_transcripts_migrated(
+    factory: MySqlConnectionFactory,
+    rows: tuple[tuple[int, TranscriptSource, TranscriptExtractionResult], ...],
+) -> list[str]:
+    for video_id, source, result in rows:
+        _assert_transcript_result(factory, video_id, source, result)
+    segment_table_count = _fetch_one(
+        factory,
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_name = 'video_transcript_segments'
+        """,
+        (),
+    )
+    raw_text_count = _fetch_one(
+        factory,
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'video_transcripts'
+          AND column_name = 'raw_text'
+        """,
+        (),
+    )
+    _require(segment_table_count == (0,) and raw_text_count == (0,))
+    return ["legacy_fixture_rows_compacted", "legacy_duplicate_storage_removed"]
 
 
 def _verify_stage_transitions(
@@ -549,8 +666,8 @@ def _verify_stage_transitions(
         TranscriptSource.YT_DLP,
         dataset.ytdlp_success,
     )
-    _assert_no_duplicate_sequences(factory, replacement_video)
-    checks.append("latest_fixture_replaces_segments_atomically")
+    _assert_single_transcript(factory, replacement_video)
+    checks.append("latest_fixture_replaces_payload_atomically")
 
     rate_limited_video = _insert_video_and_queue(
         factory, channel_id, "rate_limited"
@@ -677,6 +794,8 @@ def _verification_youtube_video_id(label: str) -> str:
         "unclaimed": "verify00005",
         "stuck": "verify00006",
         "replacement": "verify00007",
+        "migration_library": "verify00009",
+        "migration_ytdlp": "verify00010",
     }
     return values[label]
 
@@ -733,27 +852,8 @@ def _assert_transcript_result(
     source: TranscriptSource,
     result: TranscriptExtractionResult,
 ) -> None:
-    transcript = _fetch_one(
-        factory,
-        "SELECT source, raw_text FROM video_transcripts WHERE video_id = %s",
-        (video_id,),
-    )
-    _require(transcript == (source.value, result.text))
-    segments = _fetch_all(
-        factory,
-        """
-        SELECT sequence, start_ms, end_ms, text
-        FROM video_transcript_segments
-        WHERE video_id = %s
-        ORDER BY sequence
-        """,
-        (video_id,),
-    )
-    expected = tuple(
-        (segment.sequence, segment.start_ms, segment.end_ms, segment.text)
-        for segment in result.segments
-    )
-    _require(segments == expected)
+    stored = TranscriptStore(factory).find_success(video_id)
+    _require(stored is not None and stored.source is source and stored.result == result)
 
 
 def _assert_no_transcript(factory: MySqlConnectionFactory, video_id: int) -> None:
@@ -762,27 +862,18 @@ def _assert_no_transcript(factory: MySqlConnectionFactory, video_id: int) -> Non
         "SELECT COUNT(*) FROM video_transcripts WHERE video_id = %s",
         (video_id,),
     )
-    segment_count = _fetch_one(
-        factory,
-        "SELECT COUNT(*) FROM video_transcript_segments WHERE video_id = %s",
-        (video_id,),
-    )
-    _require(transcript_count == (0,) and segment_count == (0,))
+    _require(transcript_count == (0,))
 
 
-def _assert_no_duplicate_sequences(
+def _assert_single_transcript(
     factory: MySqlConnectionFactory, video_id: int
 ) -> None:
     row = _fetch_one(
         factory,
-        """
-        SELECT COUNT(*), COUNT(DISTINCT sequence)
-        FROM video_transcript_segments
-        WHERE video_id = %s
-        """,
+        "SELECT COUNT(*) FROM video_transcripts WHERE video_id = %s",
         (video_id,),
     )
-    _require(row is not None and row[0] == row[1])
+    _require(row == (1,))
 
 
 def _execute(

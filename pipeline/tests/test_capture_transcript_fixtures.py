@@ -15,6 +15,7 @@ from scripts.capture_transcript_fixtures import (
     _capture_library_payload,
     _capture_ytdlp_payload,
     _read_selection,
+    _reuse_library_payload,
     _write_dataset,
     main,
 )
@@ -34,7 +35,7 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
             )
 
             selected = _read_selection(selection_path)
-            _write_dataset(root / "dataset", _library_payload(), _json3_payload())
+            _write_dataset(root / "dataset", _library_payload(), _srv1_payload())
             manifest = (root / "dataset" / "manifest.json").read_text(
                 encoding="utf-8"
             )
@@ -61,12 +62,22 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
     def test_refuses_to_overwrite_existing_fixture_or_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "dataset"
-            _write_dataset(target, _library_payload(), _json3_payload())
+            _write_dataset(target, _library_payload(), _srv1_payload())
 
             with self.assertRaisesRegex(
                 TranscriptFixtureCaptureError, "fixture_dataset_already_exists"
             ):
-                _write_dataset(target, _library_payload(), _json3_payload())
+                _write_dataset(target, _library_payload(), _srv1_payload())
+
+    def test_reuses_a_verified_api_fixture_without_an_external_api_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "dataset"
+            expected = _library_payload()
+            _write_dataset(root, expected, _srv1_payload())
+
+            actual = _reuse_library_payload(root)
+
+            self.assertEqual(actual, expected)
 
     def test_library_fixture_is_compact_and_contains_only_normalizer_fields(
         self,
@@ -218,18 +229,9 @@ def _library_payload() -> bytes:
     ).encode("utf-8")
 
 
-def _json3_payload() -> bytes:
-    return json.dumps(
-        {
-            "events": [
-                {
-                    "tStartMs": 0,
-                    "dDurationMs": 1000,
-                    "segs": [{"utf8": "actual fixture"}],
-                }
-            ]
-        },
-        ensure_ascii=False,
+def _srv1_payload() -> bytes:
+    return (
+        '<transcript><text start="0" dur="1">actual fixture</text></transcript>'
     ).encode("utf-8")
 
 
