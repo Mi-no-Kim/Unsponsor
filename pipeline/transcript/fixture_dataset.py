@@ -1,8 +1,10 @@
-"""레포 밖 API·yt-dlp 성공 fixture를 검증하고 생산 모델로 변환한다."""
+"""레포 밖 API·yt-dlp gzip fixture를 검증하고 생산 모델로 변환한다."""
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -10,7 +12,7 @@ from pathlib import Path
 
 from transcript.library_extractor import _normalize_response
 from transcript.model import TranscriptExtractionResult, TranscriptSegment
-from transcript.ytdlp_extractor import _normalize_json3
+from transcript.ytdlp_extractor import _normalize_json3_bytes
 
 
 class TranscriptFixtureDatasetError(ValueError):
@@ -41,7 +43,7 @@ class TranscriptFixtureDataset:
             "fixtures",
         }:
             raise TranscriptFixtureDatasetError("fixture manifest contract is invalid")
-        if manifest["schema_version"] != 3:
+        if manifest["schema_version"] != 4:
             raise TranscriptFixtureDatasetError("fixture manifest version is unsupported")
 
         fixtures = manifest["fixtures"]
@@ -51,14 +53,14 @@ class TranscriptFixtureDataset:
         }:
             raise TranscriptFixtureDatasetError("fixture manifest contract is invalid")
 
-        library_path = _verified_payload_path(
+        library_payload = _verified_gzip_payload(
             root,
             fixtures["library_success"],
             filename=_LIBRARY_FIXTURE_FILENAME,
             payload_format=_LIBRARY_FIXTURE_FORMAT,
             label="library",
         )
-        ytdlp_path = _verified_payload_path(
+        ytdlp_payload = _verified_gzip_payload(
             root,
             fixtures["ytdlp_success"],
             filename=_YTDLP_FIXTURE_FILENAME,
@@ -68,10 +70,9 @@ class TranscriptFixtureDataset:
 
         try:
             library_result = TranscriptExtractionResult.succeeded(
-                _normalize_library_fixture(library_path)
+                _normalize_library_fixture(library_payload)
             )
         except (
-            OSError,
             UnicodeDecodeError,
             json.JSONDecodeError,
             TypeError,
@@ -82,10 +83,9 @@ class TranscriptFixtureDataset:
             ) from error
         try:
             ytdlp_result = TranscriptExtractionResult.succeeded(
-                _normalize_json3(ytdlp_path)
+                _normalize_json3_bytes(ytdlp_payload)
             )
         except (
-            OSError,
             UnicodeDecodeError,
             json.JSONDecodeError,
             TypeError,
@@ -107,27 +107,34 @@ class _LibraryFixtureSnippet:
     duration: float
 
 
-_LIBRARY_FIXTURE_FILENAME = "api-success.json"
+_LIBRARY_FIXTURE_FILENAME = "api-success.json.gz"
 _LIBRARY_FIXTURE_FORMAT = "youtube-transcript-api-snippets"
-_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3"
+_YTDLP_FIXTURE_FILENAME = "yt-dlp-success.json3.gz"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_MAX_COMPRESSED_BYTES = 4 * 1024 * 1024
+_MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024
 
 
-def _verified_payload_path(
+def _verified_gzip_payload(
     root: Path,
     document: object,
     *,
     filename: str,
     payload_format: str,
     label: str,
-) -> Path:
+) -> bytes:
     if not isinstance(document, dict) or set(document) != {
         "file",
         "format",
+        "compression",
         "sha256",
     }:
         raise TranscriptFixtureDatasetError(f"{label} fixture metadata is invalid")
-    if document["format"] != payload_format or document["file"] != filename:
+    if (
+        document["format"] != payload_format
+        or document["compression"] != "gzip"
+        or document["file"] != filename
+    ):
         raise TranscriptFixtureDatasetError(f"{label} fixture metadata is invalid")
 
     manifest_filename = document["file"]
@@ -144,20 +151,40 @@ def _verified_payload_path(
     if not payload_path.is_file() or payload_path.is_symlink():
         raise TranscriptFixtureDatasetError(f"{label} fixture payload is unavailable")
     try:
-        payload = payload_path.read_bytes()
+        size = payload_path.stat().st_size
+        if not 1 <= size <= _MAX_COMPRESSED_BYTES:
+            raise TranscriptFixtureDatasetError(
+                f"{label} fixture compressed size is invalid"
+            )
+        compressed_payload = payload_path.read_bytes()
     except OSError as error:
         raise TranscriptFixtureDatasetError(
             f"{label} fixture payload is unavailable"
         ) from error
-    if hashlib.sha256(payload).hexdigest() != expected_hash:
+    if hashlib.sha256(compressed_payload).hexdigest() != expected_hash:
         raise TranscriptFixtureDatasetError(
             f"{label} fixture payload checksum does not match"
         )
-    return payload_path
+    return _decompress_gzip(compressed_payload, label)
 
 
-def _normalize_library_fixture(path: Path) -> tuple[TranscriptSegment, ...]:
-    document = _read_json(path, "library fixture")
+def _decompress_gzip(payload: bytes, label: str) -> bytes:
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as stream:
+            decompressed = stream.read(_MAX_DECOMPRESSED_BYTES + 1)
+    except (OSError, EOFError) as error:
+        raise TranscriptFixtureDatasetError(
+            f"{label} fixture gzip payload is invalid"
+        ) from error
+    if not decompressed or len(decompressed) > _MAX_DECOMPRESSED_BYTES:
+        raise TranscriptFixtureDatasetError(
+            f"{label} fixture decompressed size is invalid"
+        )
+    return decompressed
+
+
+def _normalize_library_fixture(payload: bytes) -> tuple[TranscriptSegment, ...]:
+    document = json.loads(payload.decode("utf-8"))
     if not isinstance(document, list):
         raise TranscriptFixtureDatasetError("library fixture must be an array")
 

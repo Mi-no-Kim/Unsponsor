@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import gzip
 import json
 import logging
 import tempfile
@@ -41,6 +42,16 @@ class CaptureTranscriptFixturesTests(unittest.TestCase):
 
             self.assertEqual(selected, private_video_id)
             self.assertNotIn(private_video_id, manifest)
+            self.assertEqual(
+                gzip.decompress((root / "dataset" / "api-success.json.gz").read_bytes()),
+                _library_payload(),
+            )
+            self.assertEqual(
+                gzip.decompress(
+                    (root / "dataset" / "yt-dlp-success.json3.gz").read_bytes()
+                ),
+                _json3_payload(),
+            )
             self.assertTrue(TranscriptFixtureDataset.load(root / "dataset"))
 
     def test_rejects_invalid_or_multiple_selection_entries(self) -> None:

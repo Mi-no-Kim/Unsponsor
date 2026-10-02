@@ -469,7 +469,19 @@ def _has_http_status(error: BaseException, expected_status: int) -> bool:
 def _normalize_json3(path: Path) -> tuple[TranscriptSegment, ...]:
     """자막 JSON3 이벤트를 시간·순서를 보존한 세그먼트로 정규화한다."""
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _normalize_json3_bytes(path.read_bytes())
+
+
+def _normalize_json3_bytes(payload: bytes) -> tuple[TranscriptSegment, ...]:
+    """메모리의 JSON3 원문을 파일 입력과 같은 규칙으로 정규화한다."""
+
+    document = json.loads(payload.decode("utf-8"))
+    return _normalize_json3_document(document)
+
+
+def _normalize_json3_document(payload: object) -> tuple[TranscriptSegment, ...]:
+    """파싱된 JSON3 이벤트를 공통 자막 세그먼트로 정규화한다."""
+
     if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
         raise ValueError("JSON3 subtitle payload has no events")
 

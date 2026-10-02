@@ -41,10 +41,12 @@ commit한 결과를 매번 새 연결로 조회한다. 개발 DB와 기존 32건
 않는다.
 
 fixture 기본 위치는 `%LOCALAPPDATA%\Unsponsor\fixtures\transcript-w027`이다. 이 디렉터리에는
-API가 반환한 `text`·`start`·`duration`만 compact JSON으로 담은 `api-success.json`, 실제
-`yt-dlp-success.json3`, 두 파일의 고정 이름·형식·SHA-256만 담은 `manifest.json`을 둔다. API의
-전송 계층 원문, 영상 ID, URL과 자격 증명은 저장하지 않는다. 실제 영상 ID 한 건은 별도의 레포 밖
-선택 파일에 다음 형태로 보관하며, manifest·명령 출력·Git에는 복사하지 않는다.
+API가 반환한 `text`·`start`·`duration`만 compact JSON으로 만든 뒤 gzip으로 압축한
+`api-success.json.gz`, 실제 JSON3 응답 본문 원본을 gzip으로 압축한
+`yt-dlp-success.json3.gz`, 두 파일의 고정 이름·원래 형식·압축 방식·압축 바이트 SHA-256만 담은
+`manifest.json`을 둔다. API의 전송 계층 원문, 영상 ID, URL과 자격 증명은 저장하지 않는다. 실제
+영상 ID 한 건은 별도의 레포 밖 선택 파일에 다음 형태로 보관하며, manifest·명령 출력·Git에는
+복사하지 않는다.
 
 ```json
 { "video_id": "<11자리 영상 ID>" }
@@ -55,7 +57,11 @@ fixture에는 현재 생산 코드가 쓰는 세 필드만 공백 없는 JSON으
 `preserve_formatting=False`는 내려받은 응답의 파싱 방식일 뿐 전송량을 줄이는 옵션은 아니다.
 yt-dlp는 기존 생산 설정대로 `skip_download`, 단일 언어 요청, `json3`, 자동 번역 제외를 사용해
 영상·오디오와 불필요한 번역 자막을 받지 않는다. JSON3를 다른 형식으로 바꾸거나 필드를 제거하면
-생산 정규화기 입력과 타임라인 충실도가 달라질 수 있으므로 W-027에서는 더 축소하지 않는다.
+생산 정규화기 입력과 타임라인 충실도가 달라질 수 있으므로 W-027에서는 형식을 바꾸지 않는다. 대신
+두 파일을 gzip level 9로 무손실 압축한다. 실제 데이터에서는 API 결과가 53,437 bytes에서 15,186
+bytes로, JSON3 원문이 355,653 bytes에서 30,302 bytes로 줄어 원문과 타임라인을 그대로 복원할 수
+있으면서 전체 저장량이 약 409KB에서 45KB가 됐다. 로더는 checksum과 압축·해제 크기 제한을 먼저
+검증하고 메모리에서 해제한 뒤 생산 정규화 코드로 전달한다.
 
 fixture가 없다면 아래 수집 명령을 한 번 명시적으로 실행한다. 이 명령은 먼저 현재 DataImpulse
 프록시가 강제된 `youtube-transcript-api`로 성공 결과 한 건을 받고, 이어서 외부 YouTube에
